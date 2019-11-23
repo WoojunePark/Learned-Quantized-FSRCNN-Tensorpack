@@ -1,15 +1,17 @@
 # environment related
-DATA_DIR = "/database/wjpark_db/General-100"  # in 'string'
+# DATA_DIR = "/database/wjpark_db/General-100"  # in 'string'
+DATA_ZIP_DIR = '/database/wjpark_db/General-100_comp/General-100.zip'   # in 'string'
 LOG_DIR = ""  # in 'string'
 GPU = "0, 3"  # comma separated list of GPU(s) to use. in 'string'
+DATAFLOW_PROC = 2
 
 # train related
-BATCH_SIZE = 100
+BATCH_SIZE = 10
 WEIGHT_DECAY = 5e-4
 MAX_EPOCH = 200
 
 # data related
-INPUT_IMAGE_SIZE = 50
+INPUT_IMAGE_SIZE = 100
 # ERROR if INPUT_IMAGE_SIZE % SCALE != 0
 
 # hyper params
