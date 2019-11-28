@@ -2,13 +2,19 @@
 # DATA_DIR = "/database/wjpark_db/General-100"  # in 'string'
 DATA_ZIP_DIR = '/database/wjpark_db/General-100_comp/General-100.zip'   # in 'string'
 LOG_DIR = ""  # in 'string'
-GPU = "0, 3"  # comma separated list of GPU(s) to use. in 'string'
+GPU = "1, 3"  # comma separated list of GPU(s) to use. in 'string'
 DATAFLOW_PROC = 2
+LOWRES_DIR = '/home/wjpark/pycharm_project/tensorpack_study/test.png'
+SROUTPUT_DIR = '/home/wjpark/pycharm_project/tensorpack_study/'
+
 
 # train related
-BATCH_SIZE = 10
+BATCH_SIZE = 4
 WEIGHT_DECAY = 5e-4
 MAX_EPOCH = 200
+FSRCNN_D = 56
+FSRCNN_S = 12
+FSRCNN_M = 4
 
 # data related
 INPUT_IMAGE_SIZE = 100
@@ -16,8 +22,8 @@ INPUT_IMAGE_SIZE = 100
 
 # hyper params
 SCALE = 2  # in 'int'
-QW = 1  # quantization weight in 'int'
-QA = 1  # quantization activation  in 'int'
+QW = 4  # quantization weight in 'int'
+QA = 4  # quantization activation  in 'int'
 
 
 # parser.add_argument("--dataset",default="data/General-100") V

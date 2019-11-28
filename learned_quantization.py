@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.contrib.framework import add_model_variable
 from tensorflow.python.training import moving_averages
+from tensorflow.contrib.layers import variance_scaling_initializer
 from tensorpack.models import *
 from tensorpack.tfutils.tower import get_current_tower_context
 
@@ -327,12 +328,50 @@ def Conv2DQuant(x, out_channel, kernel_shape,
                    for i, k in zip(inputs, kernels)]
         conv = tf.concat(outputs, channel_axis)
 
-    ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
+    if nl == PReLU:
+        ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
+    else:
+        ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
     ret.variables = VariableHolder(W=W)
     if use_bias:
         ret.variables.b = b
     if fc:
         ret = tf.reshape(ret, [-1, out_channel])
+    return ret
+
+
+def prelu(_x):
+    """
+    Parametric ReLU.
+    """
+    alphas = tf.get_variable(_x.get_shape()[-1],
+                             initializer=tf.constant_initializer(0.1),
+                             dtype=tf.float32, trainable=True)
+    pos = tf.nn.relu(_x)
+    neg = alphas * (_x - abs(_x)) * 0.5
+    return pos + neg
+
+
+@layer_register(log_shape=False, use_scope=None)
+def PReLU_4Q(x, name=None):
+    """
+    Parameterized ReLU as in the paper `Delving Deep into Rectifiers: Surpassing
+    Human-Level Performance on ImageNet Classification
+    <http://arxiv.org/abs/1502.01852>`_.
+    Args:
+        x (tf.Tensor): input
+        init (float): initial value for the learnable slope.
+        name (str): deprecated argument. Don't use
+    Variable Names:
+    * ``alpha``: learnable slope.
+    """
+    # init = variance_scaling_initializer(mode='FAN_IN')
+    init = tf.constant_initializer(0.001)
+    alpha = tf.get_variable('alpha', [], initializer=init)
+    x = ((1 + alpha) * x + (1 - alpha) * tf.abs(x))
+    ret = tf.multiply(x, 0.5, name=name or None)
+
+    ret.variables = VariableHolder(alpha=alpha)
     return ret
 
 
@@ -374,3 +413,25 @@ def getfcBNReLU(x, name=None):
     x = BatchNorm('bn', x, data_format='NHWC', use_scale=False, use_bias=False)
     x = tf.nn.relu(x, name=name)
     return x
+
+
+@layer_register(log_shape=False, use_scope=None)
+def PReLUQuant(x):
+    """
+    A shorthand of PReLU + QuantizedActiv.
+    """
+    x = PReLU(x)
+    x = QuantizedActiv('quant', x)
+    return x
+
+
+def getPReLUQuant(x, name=None):
+    """
+    A shorthand of PReLU + QuantizedActiv.
+    """
+    x = PReLU(x, name=name)
+    x = QuantizedActiv('quant', x)
+    return x
+
+
+
