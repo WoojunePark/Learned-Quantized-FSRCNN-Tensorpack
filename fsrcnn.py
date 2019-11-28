@@ -26,6 +26,37 @@ SHAPE_LR = 100
 CHANNELS = 3
 
 
+def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
+    """`Peek Signal to Noise Ratio <https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio>`_.
+    .. math::
+        PSNR = 20 \cdot \log_{10}(MAX_p) - 10 \cdot \log_{10}(MSE)
+    Args:
+        prediction: a :class:`tf.Tensor` representing the prediction signal.
+        ground_truth: another :class:`tf.Tensor` with the same shape.
+        maxp: maximum possible pixel value of the image (255 in in 8bit images)
+    Returns:
+        A scalar tensor representing the PSNR.
+    """
+    prediction = tf.abs(prediction)
+    ground_truth = tf.abs(ground_truth)
+
+    def log10(x):
+        with tf.name_scope("log10"):
+            numerator = tf.log(x)
+            denominator = tf.log(tf.constant(10, dtype=numerator.dtype))
+            return numerator / denominator
+
+    mse = tf.reduce_mean(tf.square(prediction - ground_truth))
+    if maxp is None:
+        psnr = tf.multiply(log10(mse), -10., name=name)
+    else:
+        maxp = float(maxp)
+        psnr = tf.multiply(log10(mse + 1e-6), -10.)
+        psnr = tf.add(tf.multiply(20., log10(maxp)), psnr, name=name)
+    add_moving_summary(psnr)
+    return psnr
+
+
 class Model(ModelDesc):
     def __init__(self, d, s, m, height=SHAPE_LR, width=SHAPE_LR, qw=1, qa=1, ):
         super(Model, self).__init__()
@@ -53,19 +84,22 @@ class Model(ModelDesc):
         # self.label_size = config.label_size
 
     def inputs(self):
-        return [tf.TensorSpec((None, self.height*1,self.width*1, CHANNELS), tf.float32, 'input_lr'),
+        return [tf.TensorSpec((None, self.height*1,self.width*1, CHANNELS), tf.float32, 'input_x'),
                 # tf.TensorSpec((None, self.height*4,self.width*4, CHANNELS), tf.float32, 'input_hr')
                 ]
 
     def build_graph(self, input_x):
-        input_x = input_x / 255.0
+        # input_x = input_x / 255.0
 
         d = self.d
         s = self.s
         m = self.m
         input_bicubic = tf.image.resize(
-            input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
+            input_x, [config.INPUT_IMAGE_SIZE, config.INPUT_IMAGE_SIZE], method=tf.image.ResizeMethod.BICUBIC,
             name='bicubic_baseline')
+        # input_x = original 100X100 image
+        # input_bicubic = resized 50x50 image
+        #
 
         assert tf.test.is_gpu_available()
         # input_lr = tf.transpose(image, [0, 3, 1, 2])
@@ -86,7 +120,7 @@ class Model(ModelDesc):
                      padding='same',
                      kernel_shape=1,
                      stride=1,
-                     W_init=variance_scaling_initializer(mode='FAN_IN'),
+                     # W_init=variance_scaling_initializer(mode='FAN_IN'),
                      # b_init=tf.constant_initializer(value=0.0),
                      nl=PReLU_4Q,
                      use_bias=False,
@@ -100,29 +134,29 @@ class Model(ModelDesc):
 
             # -- Model architecture --
             # feature extraction : 5x5 convolutions. (Non-Quantized)
-            print('i_bi : ', input_bicubic)
+            # print('i_bi : ', input_bicubic)
             layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
-            print('__fd : ', layer)
+            # print('__fd : ', layer)
 
             # shrinking : Reduction in feature maps.
             layer = Conv2DQuant('2_Shrnk', layer, s)
-            print('__sh : ', layer)
+            # print('__sh : ', layer)
             if self.qa > 0:
                 layer = QuantizedActiv('2_Shrnk_QA', layer, self.qa)
-                print('q_sh : ', layer)
+                # print('q_sh : ', layer)
 
             # non-linear mappping : Multiple layers are applied 3x3.
             for i in range(0, m):
                 layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
                 if self.qa > 0:
                     layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, self.qa)
-                    print('q_nl', str(i), ": ", layer)
+                    # print('q_nl', str(i), ": ", layer)
 
             # expanding : The feature map is now increased by 1x1 convolutions.
             layer = Conv2DQuant('4_Expan', layer, d)
             if self.qa > 0:
                 layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
-                print('q_ex : ', layer)
+                # print('q_ex : ', layer)
 
             # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
             # layer = tf.nn.conv2d_transpose('tr', input=layer, filters=3,
@@ -134,28 +168,31 @@ class Model(ModelDesc):
             layer = Conv2DQuant('5_Su_Px', layer, 12)
             if self.qa > 0:
                 layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
-                print('q_su : ', layer)
+                # print('q_su : ', layer)
 
             layer = tf.nn.depth_to_space(layer, 2, data_format="NHWC", name='SR_output')
-            print('_fin : ', layer)
+            # print('_fin : ', layer)
 
         # -- some outputs
         # out_nchw = tf.transpose(layer, [0, 3, 1, 2], name="NCHW_output")
-        with tf.variable_scope('psnr'):
-            psnr = tf.image.psnr(layer, input_x, max_val=255)
-            # print("==========================")
-            # print("PSNR: ", psnr)
+        #with tf.variable_scope('psnr'):
+        psnr = psnr_calc(layer, input_x, maxp=255)
+        # psnr_sum = []
+        # psnr = tf.image.psnr(layer, input_x, max_val=255).numpy()
+        # psnr_sum.append(psnr)
+        print("PSNR: ", psnr)
+        # self.psnr = tf.add_n(psnr, name='PSNR')
+        # psnr = tf.squeeze(psnr)
+        add_moving_summary(tf.reduce_mean(psnr, name='psnr_sum'))
 
         mse = tf.losses.mean_squared_error(layer, input_x)
         print("MSE: ", mse)
 
-        # cost related lines...
-        add_moving_summary(tf.reduce_mean(mse, name='Mean_Squared_Error'))
+        add_moving_summary(tf.reduce_mean(mse, name='mean_squared_error_sum'))
+        # add_moving_summary(mse)
 
-        add_moving_summary(psnr)
         add_param_summary(('.*/W', ['histogram']))  # monitor W
-
-        self.cost = tf.add_n([mse], name='cost')
+        self.cost = tf.add_n([mse], name='mean_squared_error_inf')
 
         return self.cost
 
@@ -165,12 +202,12 @@ class Model(ModelDesc):
         opt = tf.train.MomentumOptimizer(lr, 0.9)
         return opt
 
-    def loss(self, Y, X):
-        dY = tf.image.sobel_edges(Y)
-        dX = tf.image.sobel_edges(X)
-        M = tf.sqrt(tf.square(dY[:, :, :, :, 0]) + tf.square(dY[:, :, :, :, 1]))
-        return tf.losses.absolute_difference(dY, dX) \
-               + tf.losses.absolute_difference((1.0 - M) * Y, (1.0 - M) * X, weights=2.0)
+    # def mean_squared_error(self, Y, X):
+    #     dY = tf.image.sobel_edges(Y)
+    #     dX = tf.image.sobel_edges(X)
+    #     M = tf.sqrt(tf.square(dY[:, :, :, :, 0]) + tf.square(dY[:, :, :, :, 1]))
+    #     return tf.losses.absolute_difference(dY, dX) \
+    #            + tf.losses.absolute_difference((1.0 - M) * Y, (1.0 - M) * X, weights=2.0)
 
 
 def apply(model_path, output_path='.'):
@@ -218,7 +255,7 @@ if __name__ == '__main__':
             callbacks=[
                 ModelSaver(keep_checkpoint_every_n_hours=1),
                 InferenceRunner(dataset_test,
-                                [ScalarStats('train_error')]),
+                                [ScalarStats('mean_squared_error_inf')]),
                 ScheduledHyperParamSetter('learning_rate',
                                           [(1, 0.02), (80, 0.002), (160, 0.0002), (300, 0.00002)])
             ],
