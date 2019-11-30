@@ -7,6 +7,8 @@ import cv2
 from tensorpack import MapDataComponent, RNGDataFlow
 from tensorpack.dataflow.serialize import LMDBSerializer
 
+import config
+
 
 class ImageDataFromZIPFile(RNGDataFlow):
     """ Produce images read from a list of zip files. """
@@ -47,6 +49,61 @@ class ImageDataFromZIPFile(RNGDataFlow):
             yield [im_data]
 
 
+def make_dataset(paths):
+    """
+    Python generator-style dataset. Creates low-res and corresponding high-res patches.
+    """
+    # set lr and hr sizes
+    size_lr = 10
+    if config.SCALE == 3:
+        size_lr = 7
+    elif config.SCALE == 4:
+        size_lr = 6
+    size_hr = size_lr * config.SCALE
+
+    for p in paths:
+        # read
+        im = cv2.imread(p.decode(), 3).astype(np.float32)
+
+        # convert to YCrCb (cv2 reads images in BGR!), and normalize
+        im_ycc = cv2.cvtColor(im, cv2.COLOR_BGR2YCrCb) / 255.0
+
+        # -- Creating LR and HR images
+        # make current image divisible by scale (because current image is the HR image)
+        im_ycc_hr = im_ycc[0:(im_ycc.shape[0] - (im_ycc.shape[0] % config.SCALE)),
+                    0:(im_ycc.shape[1] - (im_ycc.shape[1] % config.SCALE)), :]
+        im_ycc_lr = cv2.resize(im_ycc_hr, (int(im_ycc_hr.shape[1] / config.SCALE),
+                                           int(im_ycc_hr.shape[0] / config.SCALE)),
+                               interpolation=cv2.INTER_CUBIC)
+
+        # only work on the luminance channel Y
+        lr = im_ycc_lr[:, :, 0]
+        hr = im_ycc_hr[:, :, 0]
+
+        numx = int(lr.shape[0] / size_lr)
+        numy = int(lr.shape[1] / size_lr)
+
+        for i in range(0, numx):
+            startx = i * size_lr
+            endx = (i * size_lr) + size_lr
+
+            startx_hr = i * size_hr
+            endx_hr = (i * size_hr) + size_hr
+
+            for j in range(0, numy):
+                starty = j * size_lr
+                endy = (j * size_lr) + size_lr
+                starty_hr = j * size_hr
+                endy_hr = (j * size_hr) + size_hr
+
+                crop_lr = lr[startx:endx, starty:endy]
+                crop_hr = hr[startx_hr:endx_hr, starty_hr:endy_hr]
+
+                x = crop_lr.reshape((size_lr, size_lr, 1))
+                y = crop_hr.reshape((size_hr, size_hr, 1))
+                yield x, y
+
+
 class ImageEncode(MapDataComponent):
     def __init__(self, ds, mode='.jpg', dtype=np.uint8, index=0):
         def func(img):
@@ -55,18 +112,46 @@ class ImageEncode(MapDataComponent):
         super(ImageEncode, self).__init__(ds, func, index=index)
 
 
-class ImageDecode(MapDataComponent):
+class ImageDecodeBGR(MapDataComponent):
     def __init__(self, ds, index=0):
         def func(im_data):
             img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
             return img
-        super(ImageDecode, self).__init__(ds, func, index=index)
+        super(ImageDecodeBGR, self).__init__(ds, func, index=index)
+
+
+class ImageDecodeYCrCb(MapDataComponent):
+    def __init__(self, ds, index=0):
+        def func(im_data):
+            # set lr and hr sizes
+            size_lr = 10
+            if config.SCALE == 3:
+                size_lr = 7
+            elif config.SCALE == 4:
+                size_lr = 6
+            size_hr = size_lr * config.SCALE
+
+            # read
+            img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
+            # convert to YCrCb (cv2 reads images in BGR!), and normalize
+            im_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb) / 255.0
+
+            # only work on the luminance channel Y
+            im_y, im_cr, im_cb = cv2.split(im_ycc)
+            # lr = im_ycc[:, :, 0]
+
+            # tf.shape(tf.expand_dims(im_y, 3))
+            im_y = np.expand_dims(im_y, axis=3)  # (b, 100, 100) -> (b, 100, 100, 1)
+
+            return im_y
+        super(ImageDecodeYCrCb, self).__init__(ds, func, index=index)
 
 
 class RejectTooSmallImages(MapDataComponent):
     def __init__(self, ds, thresh=100, index=0):
         def func(img):
             h, w, _ = img.shape
+            # h, w = img.shape
             if (h < thresh) or (w < thresh):
                 return None
             else:
@@ -107,7 +192,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     ds = ImageDataFromZIPFile(args.input)
-    ds = ImageDecode(ds, index=0)
+    ds = ImageDecodeYCrCb(ds, index=0)
     ds = RejectTooSmallImages(ds, index=0)
     ds = CenterSquareResize(ds, index=0)
     if args.create:

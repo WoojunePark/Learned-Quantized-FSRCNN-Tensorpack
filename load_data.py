@@ -14,7 +14,8 @@ from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.utils import logger
 from tensorpack.utils.gpu import get_num_gpu
 
-from data_sampler import CenterSquareResize, ImageDataFromZIPFile, ImageDecode, RejectTooSmallImages
+from data_sampler import CenterSquareResize, ImageDataFromZIPFile, \
+    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages
 
 import config
 import learned_quantization
@@ -24,11 +25,11 @@ def get_data(file_name, train_or_test):
     isTrain = train_or_test == 'train'
     if file_name.endswith('.lmdb'):
         ds = LMDBSerializer.load(file_name, shuffle=True)
-        ds = ImageDecode(ds, index=0)
+        ds = ImageDecodeYCrCb(ds, index=0)
     elif file_name.endswith('.zip'):
         ds = ImageDataFromZIPFile(file_name, shuffle=True)
-        ds = ImageDecode(ds, index=0)
-        ds = RejectTooSmallImages(ds, thresh=100, index=0)
+        ds = ImageDecodeYCrCb(ds, index=0)
+        # ds = RejectTooSmallImages(ds, thresh=100, index=0)
         # ds = CenterSquareResize(ds, index=0)
     else:
         raise ValueError("Unknown file format " + file_name)
@@ -53,9 +54,10 @@ def get_data(file_name, train_or_test):
     ds = AugmentImageComponent(ds, augmentors, index=0, copy=True)
 
     # ds = MapData(ds, lambda x: [cv2.resize(x[0], (32, 32), interpolation=cv2.INTER_CUBIC), x[0]])
-    ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
-    ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
-    # ds = PrefetchData(ds, 3, 2)
+    if isTrain:
+        ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
+        ds = PrefetchData(ds, 2, 2)
+        ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
     return ds
 
 

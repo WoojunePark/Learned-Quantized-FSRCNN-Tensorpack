@@ -23,7 +23,8 @@ from load_data import get_data
 from learned_quantization import *
 
 SHAPE_LR = 100
-CHANNELS = 3
+CHANNELS = 1
+PS = CHANNELS * config.SCALE * config.SCALE   # for sub-pixel, PS = Phase Shift
 
 
 def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
@@ -35,7 +36,7 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
         ground_truth: another :class:`tf.Tensor` with the same shape.
         maxp: maximum possible pixel value of the image (255 in in 8bit images)
     Returns:
-        A scalar tensor representing the PSNR.
+        A scalar tensor representing the PSNR. (tf.psnr returns (psnr_value, 1) tensor.)
     """
     prediction = tf.abs(prediction)
     ground_truth = tf.abs(ground_truth)
@@ -58,7 +59,7 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
 
 
 class Model(ModelDesc):
-    def __init__(self, d, s, m, height=SHAPE_LR, width=SHAPE_LR, qw=1, qa=1, ):
+    def __init__(self, d, s, m, qw=1, qa=0, height=SHAPE_LR, width=SHAPE_LR):
         super(Model, self).__init__()
         self.height = height
         self.width = width
@@ -90,106 +91,78 @@ class Model(ModelDesc):
 
     def build_graph(self, input_x):
         # input_x = input_x / 255.0
+        # image_size = config.INPUT_IMAGE_SIZE
 
         d = self.d
         s = self.s
         m = self.m
         input_bicubic = tf.image.resize(
-            input_x, [config.INPUT_IMAGE_SIZE, config.INPUT_IMAGE_SIZE], method=tf.image.ResizeMethod.BICUBIC,
+            input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
             name='bicubic_baseline')
         # input_x = original 100X100 image
         # input_bicubic = resized 50x50 image
-        #
 
         assert tf.test.is_gpu_available()
-        # input_lr = tf.transpose(image, [0, 3, 1, 2])
+        input_bicubic = tf.transpose(input_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        # (1(=possibly number of steams?..) , Batch_size, image_h, image_w, 3 ch.(RGB))
-
-        # tf.nn.con2d  default=NHWC
-        # input = [batch, in_h, in_w, in_c]
-        # filter = [filter_h, filter_w, in_c, out_c]
-
-        # flattens the filter to [filter_h * filter_w * in_c, out_c]
-
-        # [batch, out_h, out_w, filter_h * filter_w * in_c]
-        # 'NHWC' or 'NCHW'. Defaults to 'NHWC'.
-
-        with argscope([Conv2DQuant, MaxPooling, BatchNorm], data_format="NHWC"), \
-            argscope(Conv2DQuant,
-                     padding='same',
-                     kernel_shape=1,
-                     stride=1,
-                     # W_init=variance_scaling_initializer(mode='FAN_IN'),
-                     # b_init=tf.constant_initializer(value=0.0),
-                     nl=PReLU_4Q,
-                     use_bias=False,
-                     is_quant=True if self.qw > 0 else False,
-                     nbit=self.qw):
-
-            channels = 1
-            PS = channels * 4  # for sub-pixel, PS = Phase Shift
-            # bias_initializer = tf.constant_initializer(value=0.0)
-            # input_bicubic = tf.transpose(input_bicubic, [0, 3, 1, 2])
+        # with argscope([Conv2DQuant, MaxPooling, BatchNorm], ), \
+        with argscope(Conv2DQuant,
+                      data_format="NCHW",
+                      padding='same', kernel_shape=1, stride=1,
+                      W_init=variance_scaling_initializer(mode='FAN_IN'),
+                      # b_init=tf.constant_initializer(value=0.0),
+                      nl=PReLU_4Q, use_bias=False, is_quant=True if self.qw > 0 else False, nbit=self.qw):
 
             # -- Model architecture --
             # feature extraction : 5x5 convolutions. (Non-Quantized)
-            # print('i_bi : ', input_bicubic)
+            # layer = Conv2D('1_Fe_Ex', input_bicubic, [5, 5, 3, d], stride=1, padding='same', use_bias=False)
             layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
-            # print('__fd : ', layer)
+            print('1_Fe_Ex', layer)
 
             # shrinking : Reduction in feature maps.
-            layer = Conv2DQuant('2_Shrnk', layer, s)
-            # print('__sh : ', layer)
             if self.qa > 0:
-                layer = QuantizedActiv('2_Shrnk_QA', layer, self.qa)
-                # print('q_sh : ', layer)
+                layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
+            layer = Conv2DQuant('2_Shrnk', layer, s)
+            print('2_Shrnk', layer)
 
             # non-linear mappping : Multiple layers are applied 3x3.
             for i in range(0, m):
-                layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
                 if self.qa > 0:
-                    layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, self.qa)
-                    # print('q_nl', str(i), ": ", layer)
+                    layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
+                layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
+                print('3_Nl_Ma', layer)
 
             # expanding : The feature map is now increased by 1x1 convolutions.
-            layer = Conv2DQuant('4_Expan', layer, d)
             if self.qa > 0:
                 layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
-                # print('q_ex : ', layer)
+            layer = Conv2DQuant('4_Expan', layer, d)
+            print('4_Expan', layer)
 
             # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
-            # layer = tf.nn.conv2d_transpose('tr', input=layer, filters=3,
-            #                                output_shape=[config.BATCH_SIZE, self.height*2, self.width*2, 1],
-            #                                strides=[1, 2, 2, 1],
-            #                                padding='SAME')
+            # layer = tf.nn.conv2d_transpose('5_Tr_Cv', layer, filters=[9, 9, 3, d],
+            #                                output_shape=[config.BATCH_SIZE, 100, 100, 3],
+            #                                strides=2,
+            #                                padding='SAME', data_format="NHWC")
 
             # 2) sub-pixel
-            layer = Conv2DQuant('5_Su_Px', layer, 12)
             if self.qa > 0:
                 layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
-                # print('q_su : ', layer)
+            layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
+            print('5_Su_Px', layer)
 
-            layer = tf.nn.depth_to_space(layer, 2, data_format="NHWC", name='SR_output')
-            # print('_fin : ', layer)
+            layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NCHW", name='SR_output')
+            print('SR_output', layer)
 
         # -- some outputs
-        # out_nchw = tf.transpose(layer, [0, 3, 1, 2], name="NCHW_output")
-        #with tf.variable_scope('psnr'):
-        psnr = psnr_calc(layer, input_x, maxp=255)
-        # psnr_sum = []
-        # psnr = tf.image.psnr(layer, input_x, max_val=255).numpy()
-        # psnr_sum.append(psnr)
+        out_nhwc = tf.transpose(layer, [0, 2, 3, 1], name="NHWC_output")  # From NCHW to NHWC
+        psnr = psnr_calc(out_nhwc, input_x, maxp=255)
         print("PSNR: ", psnr)
-        # self.psnr = tf.add_n(psnr, name='PSNR')
-        # psnr = tf.squeeze(psnr)
         add_moving_summary(tf.reduce_mean(psnr, name='psnr_sum'))
 
-        mse = tf.losses.mean_squared_error(layer, input_x)
+        mse = tf.losses.mean_squared_error(out_nhwc, input_x)
         print("MSE: ", mse)
 
         add_moving_summary(tf.reduce_mean(mse, name='mean_squared_error_sum'))
-        # add_moving_summary(mse)
 
         add_param_summary(('.*/W', ['histogram']))  # monitor W
         self.cost = tf.add_n([mse], name='mean_squared_error_inf')
@@ -202,32 +175,27 @@ class Model(ModelDesc):
         opt = tf.train.MomentumOptimizer(lr, 0.9)
         return opt
 
-    # def mean_squared_error(self, Y, X):
-    #     dY = tf.image.sobel_edges(Y)
-    #     dX = tf.image.sobel_edges(X)
-    #     M = tf.sqrt(tf.square(dY[:, :, :, :, 0]) + tf.square(dY[:, :, :, :, 1]))
-    #     return tf.losses.absolute_difference(dY, dX) \
-    #            + tf.losses.absolute_difference((1.0 - M) * Y, (1.0 - M) * X, weights=2.0)
-
 
 def apply(model_path, output_path='.'):
     assert os.path.isfile(config.LOWRES_DIR)
     assert os.path.isdir(output_path)
-    lr = cv2.imread(config.LOWRES_DIR).astype(np.float32)
-    baseline = cv2.resize(lr, (0, 0), fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-    LR_SIZE_H, LR_SIZE_W = lr.shape[:2]
+
+    input_x = get_data(config.LOWRES_DIR, 'test')
+    input_bicubic = tf.image.resize(
+        input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
+        name='input_x')
 
     predict_func = OfflinePredictor(PredictConfig(
         model=Model(d=config.FSRCNN_D, s=config.FSRCNN_S, m=config.FSRCNN_M, qw=config.QW, qa=config.QA),
         session_init=SmartInit(model_path),
         input_names=['input_x'],
-        output_names=['SR_output']))
+        output_names=['NHWC_output']))
 
-    pred = predict_func(lr[None, ...])
+    pred = predict_func(input_bicubic[None, ...])
     p = np.clip(pred[0][0, ...], 0, 255)
 
-    cv2.imwrite(os.path.join(output_path, "SR_output.png"), p)
-    cv2.imwrite(os.path.join(output_path, "baseline.png"), baseline)
+    cv2.imwrite(os.path.join(output_path, "SR_output.png"), pred)
+    cv2.imwrite(os.path.join(output_path, "input_bicubic.png"), input_x)
 
 
 if __name__ == '__main__':

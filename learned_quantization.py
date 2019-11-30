@@ -25,8 +25,9 @@ def QuantizedActiv(x, nbit=2):
         About multi-GPU training: moving averages across GPUs are not aggregated.
         Batch statistics are computed by main training tower. This is consistent with most frameworks.
     """
-    init_basis = [(NORM_PPF_0_75 * 2 / (2 ** nbit - 1)) * (2. ** i) for i in range(nbit)]
-    init_basis = tf.constant_initializer(init_basis)
+    # init_basis = [(NORM_PPF_0_75 * 2 / (2 ** nbit - 1)) * (2. ** i) for i in range(nbit)]
+    # init_basis = tf.constant_initializer(init_basis)
+
     bit_dims = [nbit, 1]
     num_levels = 2 ** nbit
     # initialize level multiplier
@@ -49,7 +50,8 @@ def QuantizedActiv(x, nbit=2):
     with tf.variable_scope('ActivationQuantization'):
         basis = tf.get_variable(
             'basis', bit_dims, tf.float32,
-            initializer=init_basis,
+            # initializer=init_basis,
+            initializer=variance_scaling_initializer(factor=1.0, mode='FAN_AVG', uniform=False),
             trainable=False)
 
         ctx = get_current_tower_context()  # current tower context
@@ -84,9 +86,19 @@ def QuantizedActiv(x, nbit=2):
                 for j in range(nbit):
                     BTxBij = tf.multiply(BT[i], BT[j])
                     BTxBij = tf.reduce_sum(BTxBij)
+                    # all dimensions are reduced, and a tensor with a single element is returned.  i.e. 6
                     BTxB.append(BTxBij)
             BTxB = tf.reshape(tf.stack(values=BTxB), [nbit, nbit])
-            BTxB_inv = tf.matrix_inverse(BTxB)
+            # 1) naive
+            # BTxB_inv = tf.matrix_inverse(BTxB)
+
+            # 2) try excpet ->doesn't work well due to poor tf.matrix_inverse
+            # try:
+            #     BTxB_inv = tf.matrix_inverse(BTxB, adjoint=None, name=None)
+            # except:
+            #     BTxB_ttt = tf.add(BTxB, tf.math.scalar_mul(tf.identity((BTxB.shape)), 1e-4))
+            #     BTxB_inv = tf.matrix_inverse(BTxB_ttt, adjoint=None, name=None)
+
             # calculate BTxX
             BTxX = []
             for i in range(nbit):
@@ -95,7 +107,10 @@ def QuantizedActiv(x, nbit=2):
                 BTxX.append(BTxXi0)
             BTxX = tf.reshape(tf.stack(values=BTxX), [nbit, 1])
 
-            new_basis = tf.matmul(BTxB_inv, BTxX)  # calculate new basis
+            # new_basis = tf.matmul(BTxB_inv, BTxX)  # calculate new basis
+            # 3) gaussian elimination
+            new_basis = tf.linalg.lstsq(BTxB, BTxX, 1e-5)
+
             # create moving averages op
             updata_moving_basis = moving_averages.assign_moving_average(
                 basis, new_basis, MOVING_AVERAGES_FACTOR)
@@ -214,7 +229,14 @@ def QuantizedWeight(name, x, n, nbit=2):
             # calculate inverse of BTxB
             if nbit > 2:
                 BTxB_transpose = tf.transpose(BTxB, [2, 0, 1])
-                BTxB_inv = tf.matrix_inverse(BTxB_transpose)
+                # 1) naive
+                # BTxB_inv = tf.matrix_inverse(BTxB_transpose)
+                # 2) try, except
+                try:
+                    BTxB_inv = tf.matrix_inverse(BTxB_transpose, adjoint=None, name=None)
+                except:
+                    BTxB_ttt = tf.add(BTxB_transpose, tf.math.scalar_mul(tf.identity((BTxB_transpose.shape)), 1e-6))
+                    BTxB_inv = tf.matrix_inverse(BTxB_ttt, adjoint=None, name=None)
                 BTxB_inv = tf.transpose(BTxB_inv, [1, 2, 0])
             elif nbit == 2:
                 det = tf.multiply(BTxB[0][0], BTxB[1][1]) - tf.multiply(BTxB[0][1], BTxB[1][0])
@@ -328,10 +350,7 @@ def Conv2DQuant(x, out_channel, kernel_shape,
                    for i, k in zip(inputs, kernels)]
         conv = tf.concat(outputs, channel_axis)
 
-    if nl == PReLU:
-        ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
-    else:
-        ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
+    ret = nl(tf.nn.bias_add(conv, b, data_format=data_format) if use_bias else conv, name='output')
     ret.variables = VariableHolder(W=W)
     if use_bias:
         ret.variables.b = b
