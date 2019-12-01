@@ -122,7 +122,7 @@ if __name__ == '__main__':
             imageio.imwrite(time_name, i[0,0, :, :, 0])
         print("shape test done!")
         sys.exit(0)
-
+#
         """
         # >>>
         # (1, 5, 100, 100, 3)

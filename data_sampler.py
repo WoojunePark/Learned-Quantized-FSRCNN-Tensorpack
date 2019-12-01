@@ -108,6 +108,7 @@ def make_dataset(paths):
                 yield x, y
 
 
+
 class ImageEncode(MapDataComponent):
     def __init__(self, ds, mode='.jpg', dtype=np.uint8, index=0):
         def func(img):

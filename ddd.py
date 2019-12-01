@@ -136,6 +136,7 @@ class Model(GANModelDesc):
                         conv5_4 = Conv2D('conv5_4', conv5_3, 512)
                         pool5 = MaxPooling('pool5', conv5_4, 2)  # 4
 
+
             # perceptual loss
             with tf.name_scope('perceptual_loss'):
                 pool2 = normalize(pool2)

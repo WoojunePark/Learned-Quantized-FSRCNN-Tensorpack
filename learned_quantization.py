@@ -147,14 +147,17 @@ def QuantizedWeight(name, x, n, nbit=2):
         Batch statistics are computed by main training tower. This is consistent with most frameworks.
     """
     num_filters = x.get_shape().as_list()[-1]
+
     init_basis = []
     base = NORM_PPF_0_75 * ((2. / n) ** 0.5) / (2 ** (nbit - 1))
     for j in range(nbit):
         init_basis.append([(2 ** j) * base for i in range(num_filters)])
     init_basis = tf.constant_initializer(init_basis)
+
     bit_dims = [nbit, num_filters]
     num_levels = 2 ** nbit
     delta = EPS
+
     # initialize level multiplier
     init_level_multiplier = []
     for i in range(num_levels):
@@ -167,6 +170,7 @@ def QuantizedWeight(name, x, n, nbit=2):
             level_multiplier_i[j] = float(binary_code)
             level_number = level_number // 2
         init_level_multiplier.append(level_multiplier_i)
+
     # initialize threshold multiplier
     init_thrs_multiplier = []
     for i in range(1, num_levels):
@@ -181,11 +185,10 @@ def QuantizedWeight(name, x, n, nbit=2):
             initializer=init_basis,
             trainable=False)
         level_codes = tf.constant(init_level_multiplier)
-        thrs_multiplier = tf.constant(init_thrs_multiplier)
+        thrs_multiplier = tf.constant(init_thrs_multiplier)  # ValueError: Cannot create a tensor proto whose content is larger than 2GB.
         sum_multiplier = tf.constant(1., shape=[1, tf.reshape(x, [-1, num_filters]).get_shape()[0]])
         sum_multiplier_basis = tf.constant(1., shape=[1, nbit])
 
-        ctx = get_current_tower_context()  # current tower context
         # calculate levels and sort
         levels = tf.matmul(level_codes, basis)
         levels, sort_id = tf.nn.top_k(tf.transpose(levels, [1, 0]), num_levels)
@@ -193,8 +196,10 @@ def QuantizedWeight(name, x, n, nbit=2):
         sort_id = tf.reverse(sort_id, [-1])
         levels = tf.transpose(levels, [1, 0])
         sort_id = tf.transpose(sort_id, [1, 0])
+
         # calculate threshold
         thrs = tf.matmul(thrs_multiplier, levels)
+
         # calculate level codes per channel
         reshape_x = tf.reshape(x, [-1, num_filters])
         level_codes_channelwise_dims = tf.stack([num_levels * num_filters, nbit])
@@ -203,6 +208,7 @@ def QuantizedWeight(name, x, n, nbit=2):
             eq = tf.equal(sort_id, i)
             level_codes_channelwise = tf.where(tf.reshape(eq, [-1]), level_codes_channelwise + level_codes[i], level_codes_channelwise)
         level_codes_channelwise = tf.reshape(level_codes_channelwise, [num_levels, num_filters, nbit])
+
         # calculate output y and its binary code
         y = tf.zeros_like(x) + levels[0]  # output
         zero_dims = tf.stack([tf.shape(reshape_x)[0] * num_filters, nbit])
@@ -215,6 +221,8 @@ def QuantizedWeight(name, x, n, nbit=2):
             y = tf.where(g, zero_y + levels[i + 1], y)
             bits_y = tf.where(tf.reshape(g, [-1]), tf.reshape(zero_bits_y + level_codes_channelwise[i + 1], [-1, nbit]), bits_y)
         bits_y = tf.reshape(bits_y, [-1, num_filters, nbit])
+
+        ctx = get_current_tower_context()  # current tower context
         # training
         if ctx.is_main_training_tower:
             BT = tf.transpose(bits_y, [2, 0, 1])
@@ -229,6 +237,7 @@ def QuantizedWeight(name, x, n, nbit=2):
                         BTxBij = BTxBij + (delta * mat_one)  # + E
                     BTxB.append(BTxBij)
             BTxB = tf.reshape(tf.stack(values=BTxB), [nbit, nbit, num_filters])
+
             # calculate inverse of BTxB
             if nbit > 2:
                 BTxB_transpose = tf.transpose(BTxB, [2, 0, 1])
@@ -251,6 +260,7 @@ def QuantizedWeight(name, x, n, nbit=2):
                 BTxB_inv = tf.reshape(tf.stack(values=inv), [nbit, nbit, num_filters])
             elif nbit == 1:
                 BTxB_inv = tf.reciprocal(BTxB)
+
             # calculate BTxX
             BTxX = []
             for i in range(nbit):
@@ -259,6 +269,7 @@ def QuantizedWeight(name, x, n, nbit=2):
                 BTxX.append(BTxXi0)
             BTxX = tf.reshape(tf.stack(values=BTxX), [nbit, num_filters])
             BTxX = BTxX + (delta * basis)  # + basis
+
             # calculate new basis
             new_basis = []
             for i in range(nbit):
@@ -267,7 +278,7 @@ def QuantizedWeight(name, x, n, nbit=2):
                 add_moving_summary(tf.reduce_mean(new_basis_i, name='new_basis_bit'+str(i)))
                 new_basis.append(new_basis_i)
             new_basis = tf.reshape(tf.stack(values=new_basis), [nbit, num_filters])
-            # add_tensor_summary(new_basis, ['histogram'], name='new_basis')
+
             # create moving averages op
             updata_moving_basis = moving_averages.assign_moving_average(
                 basis, new_basis, MOVING_AVERAGES_FACTOR)
@@ -367,16 +378,12 @@ def Conv2DQuant(x, out_channel, kernel_shape,
     return ret
 
 
-def prelu(_x):
-    """
-    Parametric ReLU.
-    """
-    alphas = tf.get_variable(_x.get_shape()[-1],
-                             initializer=tf.constant_initializer(0.1),
-                             dtype=tf.float32, trainable=True)
-    pos = tf.nn.relu(_x)
-    neg = alphas * (_x - abs(_x)) * 0.5
-    return pos + neg
+def prelu(_x, scope=None):
+    """parametric ReLU activation"""
+    with tf.variable_scope(name_or_scope=scope, default_name="prelu"):
+        _alpha = tf.get_variable("prelu", shape=_x.get_shape()[-1],
+                                 dtype=_x.dtype, initializer=tf.constant_initializer(0.1))
+        return tf.maximum(0.0, _x) + _alpha * tf.minimum(0.0, _x)
 
 
 @layer_register(log_shape=False, use_scope=None)
@@ -459,6 +466,4 @@ def getPReLUQuant(x, name=None):
     x = PReLU(x, name=name)
     x = QuantizedActiv('quant', x)
     return x
-
-
-
+#

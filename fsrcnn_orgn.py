@@ -21,7 +21,8 @@ from PIL import Image
 import imageio
 import time
 
-import config
+import config_orgn as config
+
 from load_data import get_data
 from learned_quantization import *
 
@@ -90,42 +91,58 @@ class Model(ModelDesc):
         #     name='bicubic_baseline')
         # input_bicubic = cv2.resize(input_x, dsize=(50, 50), interpolation=cv2.INTER_CUBIC)
 
-        input_bicubic = tf.image.resize_bicubic(input_x, [50, 50], name='bicubic_baseline')
+        input_bicubic = tf.image.resize_bicubic(input_x, [50, 50], name='input_bicubic')
+        output_bicubic = tf.image.resize_bicubic(input_bicubic, [100, 100], name='output_bicubic_baseline')
         # input_x = original 100X100 image
         # input_bicubic = resized 50x50 image
 
         assert tf.test.is_gpu_available()
         input_bicubic = tf.transpose(input_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        with argscope(Conv2DQuant,
+        # with argscope(Conv2DQuant,
+        #               data_format="NCHW",
+        #               padding='same', kernel_shape=1, stride=1,
+        #               W_init=variance_scaling_initializer(mode='FAN_IN'),
+        #               # b_init=tf.constant_initializer(value=0.0),
+        #               nl=PReLU_4Q, use_bias=False, is_quant=True, nbit=self.qw):
+        with argscope(Conv2D,
                       data_format="NCHW",
-                      padding='same', kernel_shape=1, stride=1,
-                      W_init=variance_scaling_initializer(mode='FAN_IN'),
-                      b_init=tf.constant_initializer(value=0.0),
-                      nl=PReLU_4Q, use_bias=True, is_quant=True, nbit=self.qw):
+                      padding='same', kernel_size=1, stride=1,
+                      kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
+                      bias_initializer=tf.constant_initializer(value=0.0),
+                      activation=prelu, use_bias=True):
+            # W_init = kernel_initializer
+            # nl = activation
 
             # feature extraction : 5x5 convolutions. (Non-Quantized)
-            # layer = Conv2D('1_Fe_Ex', input_bicubic, [5, 5, 3, d], stride=1, padding='same', use_bias=False)
-            layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
+            layer = Conv2D('1_Fe_Ex', input_bicubic, d, kernel_size=5)
+            # ----------- orgn -----------
+            # layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
             print('1_Fe_Ex', layer)
 
             # shrinking : Reduction in feature maps.
-            if self.qa > 0:
-                layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
-            layer = Conv2DQuant('2_Shrnk', layer, s)
+            layer = Conv2D('2_Shrnk', layer, s)
+            # ----------- orgn -----------
+            # if self.qa > 0:
+            #     layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
+            # layer = Conv2DQuant('2_Shrnk', layer, s)
             print('2_Shrnk', layer)
 
             # non-linear mappping : Multiple layers are applied 3x3.
             for i in range(0, m):
-                if self.qa > 0:
-                    layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
-                layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
+                layer = Conv2D('3_Nl_Ma' + str(i), layer, s, kernel_size=3)
+                # ----------- orgn -----------
+                # if self.qa > 0:
+                #     layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
+                # layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
                 print('3_Nl_Ma', layer)
 
             # expanding : The feature map is now increased by 1x1 convolutions.
-            if self.qa > 0:
-                layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
-            layer = Conv2DQuant('4_Expan', layer, d)
+            layer = Conv2D('4_Expan', layer, d)
+            # ----------- orgn -----------
+            # if self.qa > 0:
+            #     layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
+            # layer = Conv2DQuant('4_Expan', layer, d)
             print('4_Expan', layer)
 
             # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
@@ -136,9 +153,11 @@ class Model(ModelDesc):
             #                                padding='SAME', data_format="NCHW")
 
             # 2) sub-pixel
-            if self.qa > 0:
-                layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
-            layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
+            layer = Conv2D('5_Su_Px', layer, PS)
+            # ----------- orgn -----------
+            # if self.qa > 0:
+            #     layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
+            # layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
             print('5_Su_Px', layer)
 
             layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NCHW", name='SR_output')
@@ -147,11 +166,8 @@ class Model(ModelDesc):
         # -- some outputs
         out_nhwc = tf.transpose(layer, [0, 2, 3, 1], name="NHWC_output")  # From NCHW to NHWC
 
-        # time_name = time.ctime()
-        # time_name += '.jpg'
-        # imageio.imwrite(time_name, out_nhwc[0,0, :, :, 0])
-
         psnr = psnr_calc(out_nhwc, input_x, maxp=config.NORMALIZE)
+        # psnr = psnr_calc(input_x, input_x, maxp=config.NORMALIZE)
         # psnr_tf = tf.image.psnr(out_nhwc, input_x, max_val=1.0)  # outputs (psnr, 1) tensor...
         print("PSNR: ", psnr)
 
@@ -175,7 +191,7 @@ class Model(ModelDesc):
         return self.cost
 
     def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=0.001, trainable=False)
+        lr = tf.get_variable('learning_rate', initializer=1e-4, trainable=False)
         # opt = tf.train.MomentumOptimizer(lr, 0.9)
         opt = tf.train.AdamOptimizer(lr)
         return opt
@@ -230,7 +246,7 @@ if __name__ == '__main__':
                 InferenceRunner(dataset_test,
                                 [ScalarStats('mean_squared_error_cost')]),
                 ScheduledHyperParamSetter('learning_rate',
-                                          [(1, 1e-4), (100, 1e-5), (160, 1e-6), (300, 1e-7)])
+                                          [(1, 1e-3)])
             ],
             max_epoch=config.MAX_EPOCH,
             nr_tower=max(get_num_gpu(), 1),
