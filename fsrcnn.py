@@ -22,9 +22,7 @@ import config
 from load_data import get_data
 from learned_quantization import *
 
-SHAPE_LR = 100
-CHANNELS = 1
-PS = CHANNELS * config.SCALE * config.SCALE   # for sub-pixel, PS = Phase Shift
+PS = config.CHANNELS * (config.SCALE ** 2)  # for sub-pixel, PS = Phase Shift
 
 
 def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
@@ -59,7 +57,7 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
 
 
 class Model(ModelDesc):
-    def __init__(self, d, s, m, qw=1, qa=0, height=SHAPE_LR, width=SHAPE_LR):
+    def __init__(self, d, s, m, qw=1, qa=0, height=config.INPUT_IMAGE_SIZE, width=config.INPUT_IMAGE_SIZE):
         super(Model, self).__init__()
         self.height = height
         self.width = width
@@ -73,47 +71,36 @@ class Model(ModelDesc):
         self.s = s
         self.m = m
 
-        # from primitive FSRCNN
-        # Different model layer counts and filter sizes for FSRCNN vs FSRCNN-s (fast), (d, s, m) in paper
-        # model_params = [32, 0, 4, 1]
-        # self.model_params = model_params
-
-        # self.radius = config.radius
-        # self.padding = config.padding
-        # self.images = config.images
-        # self.image_size = config.image_size - self.padding
-        # self.label_size = config.label_size
-
     def inputs(self):
-        return [tf.TensorSpec((None, self.height*1,self.width*1, CHANNELS), tf.float32, 'input_x'),
+        return [tf.TensorSpec((None, self.height,self.width, config.CHANNELS), tf.float32, 'input_x'),
                 # tf.TensorSpec((None, self.height*4,self.width*4, CHANNELS), tf.float32, 'input_hr')
                 ]
 
     def build_graph(self, input_x):
-        # input_x = input_x / 255.0
-        # image_size = config.INPUT_IMAGE_SIZE
-
+        # input_x = input_x / 128.0
         d = self.d
         s = self.s
         m = self.m
-        input_bicubic = tf.image.resize(
-            input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
-            name='bicubic_baseline')
+
+        # input_bicubic = tf.image.resize(
+        #     input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
+        #     name='bicubic_baseline')
+        # input_bicubic = cv2.resize(input_x, dsize=(50, 50), interpolation=cv2.INTER_CUBIC)
+
+        input_bicubic = tf.image.resize_bicubic(input_x, [50, 50], name='bicubic_baseline')
         # input_x = original 100X100 image
         # input_bicubic = resized 50x50 image
 
         assert tf.test.is_gpu_available()
         input_bicubic = tf.transpose(input_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        # with argscope([Conv2DQuant, MaxPooling, BatchNorm], ), \
         with argscope(Conv2DQuant,
                       data_format="NCHW",
                       padding='same', kernel_shape=1, stride=1,
                       W_init=variance_scaling_initializer(mode='FAN_IN'),
                       # b_init=tf.constant_initializer(value=0.0),
-                      nl=PReLU_4Q, use_bias=False, is_quant=True if self.qw > 0 else False, nbit=self.qw):
+                      nl=PReLU_4Q, use_bias=False, is_quant=True, nbit=self.qw):
 
-            # -- Model architecture --
             # feature extraction : 5x5 convolutions. (Non-Quantized)
             # layer = Conv2D('1_Fe_Ex', input_bicubic, [5, 5, 3, d], stride=1, padding='same', use_bias=False)
             layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
@@ -139,10 +126,11 @@ class Model(ModelDesc):
             print('4_Expan', layer)
 
             # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
-            # layer = tf.nn.conv2d_transpose('5_Tr_Cv', layer, filters=[9, 9, 3, d],
-            #                                output_shape=[config.BATCH_SIZE, 100, 100, 3],
+            # tr_output_shape = calculate_output_shape(layer, 9, 9, 2, 2, 1)
+            # layer = tf.nn.conv2d_transpose(name='5_Tr_Cv', input=layer, filters=[9, 9, 1, d],
+            #                                output_shape=tr_output_shape,
             #                                strides=2,
-            #                                padding='SAME', data_format="NHWC")
+            #                                padding='SAME', data_format="NCHW")
 
             # 2) sub-pixel
             if self.qa > 0:
@@ -155,24 +143,34 @@ class Model(ModelDesc):
 
         # -- some outputs
         out_nhwc = tf.transpose(layer, [0, 2, 3, 1], name="NHWC_output")  # From NCHW to NHWC
-        psnr = psnr_calc(out_nhwc, input_x, maxp=255)
+
+        psnr = psnr_calc(out_nhwc, input_x, maxp=config.NORMALIZE)
+        # psnr_tf = tf.image.psnr(out_nhwc, input_x, max_val=1.0)  # outputs (psnr, 1) tensor...
         print("PSNR: ", psnr)
-        add_moving_summary(tf.reduce_mean(psnr, name='psnr_sum'))
 
         mse = tf.losses.mean_squared_error(out_nhwc, input_x)
         print("MSE: ", mse)
+        # add_moving_summary(tf.reduce_mean(mse, name='mean_squared_error_sum'))
+        mse_cost = tf.identity(mse, name='mean_squared_error')
+        add_moving_summary(mse_cost)
 
-        add_moving_summary(tf.reduce_mean(mse, name='mean_squared_error_sum'))
+        # wd_cost = tf.multiply(config.WEIGHT_DECAY, regularize_cost('.*/W', tf.nn.l2_loss), name='wd_cost')
+        # add_moving_summary(mse, wd_cost)
 
-        add_param_summary(('.*/W', ['histogram']))  # monitor W
-        self.cost = tf.add_n([mse], name='mean_squared_error_inf')
+        add_param_summary(('.*/W', ['histogram']),  # monitor ../Weight
+                          ('.*/b', ['histogram']),  # monitor ../basis
+                          ('.*/n', ['histogram'])   # monitor ../new_basis_i
+                          )
+
+        # self.cost = tf.add_n([mse, wd_cost], name='add_n_mse_wd_cost')
+        self.cost = tf.add_n([mse], name='mean_squared_error_cost')
 
         return self.cost
 
     def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=0.02, trainable=False)
-        # choose which optimizer?
-        opt = tf.train.MomentumOptimizer(lr, 0.9)
+        lr = tf.get_variable('learning_rate', initializer=0.001, trainable=False)
+        # opt = tf.train.MomentumOptimizer(lr, 0.9)
+        opt = tf.train.AdamOptimizer(lr)
         return opt
 
 
@@ -223,9 +221,9 @@ if __name__ == '__main__':
             callbacks=[
                 ModelSaver(keep_checkpoint_every_n_hours=1),
                 InferenceRunner(dataset_test,
-                                [ScalarStats('mean_squared_error_inf')]),
+                                [ScalarStats('mean_squared_error_cost')]),
                 ScheduledHyperParamSetter('learning_rate',
-                                          [(1, 0.02), (80, 0.002), (160, 0.0002), (300, 0.00002)])
+                                          [(1, 1e-4), (100, 1e-5), (160, 1e-6), (300, 1e-7)])
             ],
             max_epoch=config.MAX_EPOCH,
             nr_tower=max(get_num_gpu(), 1),

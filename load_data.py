@@ -5,6 +5,7 @@ import sys
 import cv2
 import six
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
 from tensorpack import *
 from tensorpack.dataflow import *
@@ -14,8 +15,11 @@ from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.utils import logger
 from tensorpack.utils.gpu import get_num_gpu
 
+import imageio
+import time
+
 from data_sampler import CenterSquareResize, ImageDataFromZIPFile, \
-    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages
+    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages, MinMaxNormalize
 
 import config
 import learned_quantization
@@ -25,11 +29,17 @@ def get_data(file_name, train_or_test):
     isTrain = train_or_test == 'train'
     if file_name.endswith('.lmdb'):
         ds = LMDBSerializer.load(file_name, shuffle=True)
-        ds = ImageDecodeYCrCb(ds, index=0)
+        if config.USE_YCBCR is True:
+            ds = ImageDecodeYCrCb(ds, index=0)
+        else:
+            ds = ImageDecodeBGR(ds, index=0)
     elif file_name.endswith('.zip'):
         ds = ImageDataFromZIPFile(file_name, shuffle=True)
-        ds = ImageDecodeYCrCb(ds, index=0)
-        # ds = RejectTooSmallImages(ds, thresh=100, index=0)
+        if config.USE_YCBCR is True:
+            ds = ImageDecodeYCrCb(ds, index=0)
+        else:
+            ds = ImageDecodeBGR(ds, index=0)
+        ds = RejectTooSmallImages(ds, thresh=100, index=0)
         # ds = CenterSquareResize(ds, index=0)
     else:
         raise ValueError("Unknown file format " + file_name)
@@ -37,33 +47,51 @@ def get_data(file_name, train_or_test):
     if isTrain:
         augmentors = [
             imgaug.RandomCrop(100),
-            imgaug.Flip(horiz=True),
-            imgaug.RandomApplyAug(imgaug.RandomChooseAug([
-                imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
+            # imgaug.Flip(horiz=True),
+            # imgaug.MinMaxNormalize(0, 255, all_channel=False),
+            # imgaug.RandomApplyAug(imgaug.RandomChooseAug([
+            #     imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
+            #     imgaug.RandomOrderAug([
+            #         imgaug.BrightnessScale((0.98, 1.02), clip=True),
+            #         # imgaug.Contrast((0.98, 1.02), rgb=None, clip=True),
+            #         # imgaug.Saturation(0.4, rgb=False),  # only for RGB or BGR images!
+            #         ]),
+            #     ]), 0.7),
+            imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
+            imgaug.RandomApplyAug(
                 imgaug.RandomOrderAug([
-                    imgaug.BrightnessScale((0.8, 1.2), clip=False),
-                    imgaug.Contrast((0.8, 1.2), clip=False),
-                    # imgaug.Saturation(0.4, rgb=True),
+                    # imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
+                    imgaug.Flip(horiz=True),
+                    imgaug.Flip(vert=True),
+                    # imgaug.BrightnessScale((0.98, 1.02), clip=True),
+                    # imgaug.Contrast((0.98, 1.02), rgb=None, clip=True),
+                    # imgaug.Saturation(0.4, rgb=False),  # only for RGB or BGR images!
                     ]),
-                ]), 0.7)
+                0.7),
+
+            # imgaug.MinMaxNormalize(0.0001, config.NORMALIZE, all_channel=True),
+            MinMaxNormalize(0, config.NORMALIZE, all_channel=True),
         ]
     else:
         augmentors = [
             imgaug.RandomCrop(100),
+            imgaug.MinMaxNormalize(0, config.NORMALIZE, all_channel=True),
         ]
+
     ds = AugmentImageComponent(ds, augmentors, index=0, copy=True)
 
+    # ds = AugmentImageComponent(ds, augmentors)
     # ds = MapData(ds, lambda x: [cv2.resize(x[0], (32, 32), interpolation=cv2.INTER_CUBIC), x[0]])
+    ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
     if isTrain:
-        ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
         ds = PrefetchData(ds, 2, 2)
-        ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
+    ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
     return ds
 
 
 def _get_data_readonly(file_name, train_or_test):
-    isTrain = train_or_test == 'train'
-    ds = get_data(file_name, isTrain)
+    print("_get_data_readonly isTrain: ", train_or_test)
+    ds = get_data(file_name, train_or_test)
     return ds
 
 
@@ -89,7 +117,11 @@ if __name__ == '__main__':
         im.reset_state()
         for i in im:
             print(np.shape(np.array(i)))
+            time_name = time.ctime()
+            time_name += '.jpg'
+            imageio.imwrite(time_name, i[0,0, :, :, 0])
         print("shape test done!")
+        sys.exit(0)
 
         """
         # >>>

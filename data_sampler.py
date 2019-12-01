@@ -7,6 +7,10 @@ import cv2
 from tensorpack import MapDataComponent, RNGDataFlow
 from tensorpack.dataflow.serialize import LMDBSerializer
 
+from tensorpack.dataflow.imgaug.base import PhotometricAugmentor
+import imageio
+import time
+
 import config
 
 
@@ -116,6 +120,7 @@ class ImageDecodeBGR(MapDataComponent):
     def __init__(self, ds, index=0):
         def func(im_data):
             img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
+            # print("type of img is : ", type(img))
             return img
         super(ImageDecodeBGR, self).__init__(ds, func, index=index)
 
@@ -134,16 +139,21 @@ class ImageDecodeYCrCb(MapDataComponent):
             # read
             img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
             # convert to YCrCb (cv2 reads images in BGR!), and normalize
-            im_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb) / 255.0
+            im_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
 
-            # only work on the luminance channel Y
-            im_y, im_cr, im_cb = cv2.split(im_ycc)
-            # lr = im_ycc[:, :, 0]
+            if config.CHANNELS == 1:
+                # only work on the luminance channel Y
+                im_y, im_cr, im_cb = cv2.split(im_ycc)
+                # im_y = im_ycc[:, :, 0]
+                im_y = np.expand_dims(im_y, axis=4)  # (b, 100, 100) -> (b, 100, 100, 1)
+                # (1, 4, 100, 100, 1)
+                # im_y[:,0:0,:,:,:]
+                # print("type of im_y is : ", type(im_y))
+                return im_y
+            else:
+                # print("type of im_ycc is : ", type(im_ycc))
+                return im_ycc
 
-            # tf.shape(tf.expand_dims(im_y, 3))
-            im_y = np.expand_dims(im_y, axis=3)  # (b, 100, 100) -> (b, 100, 100, 1)
-
-            return im_y
         super(ImageDecodeYCrCb, self).__init__(ds, func, index=index)
 
 
@@ -182,6 +192,42 @@ class CenterSquareResize(MapDataComponent):
         super(CenterSquareResize, self).__init__(ds, func, index=index)
 
 
+class MinMaxNormalize(PhotometricAugmentor):
+    """
+    Linearly scales the image to the range [min, max].
+
+    This augmentor always returns float32 images.
+    """
+    def __init__(self, min=0, max=255, all_channel=True):
+        """
+        Args:
+            max (float): The new maximum value
+            min (float): The new minimum value
+            all_channel (bool): if True, normalize all channels together. else separately.
+        """
+        self._init(locals())
+
+    def _augment(self, img, _):
+        img = img.astype('float32')
+        if self.all_channel:
+            minimum = np.min(img)
+            maximum = np.max(img)
+        else:
+            minimum = np.min(img, axis=(0, 1), keepdims=True)
+            maximum = np.max(img, axis=(0, 1), keepdims=True)
+
+        # time_name = time.ctime()
+        # time_name += '.jpg'
+        # imageio.imwrite(time_name, img[:, :, 0])
+
+        # if (maximum - minimum) < 1e-10:
+        #     print("adsdasdasdsadasdasd")
+        #     imageio.imwrite('poped_from_MinMaxNormalize.jpg', img[:, :, 0])
+
+        img = (self.max - self.min) * (img - minimum) / (maximum - minimum) + self.min
+        return img
+
+
 # Testcode for encode/decode.
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -193,7 +239,7 @@ if __name__ == '__main__':
 
     ds = ImageDataFromZIPFile(args.input)
     ds = ImageDecodeYCrCb(ds, index=0)
-    ds = RejectTooSmallImages(ds, index=0)
+    # ds = RejectTooSmallImages(ds, index=0)
     ds = CenterSquareResize(ds, index=0)
     if args.create:
         ds = ImageEncode(ds, index=0)

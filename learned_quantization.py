@@ -2,11 +2,14 @@ import tensorflow as tf
 from tensorflow.contrib.framework import add_model_variable
 from tensorflow.python.training import moving_averages
 from tensorflow.contrib.layers import variance_scaling_initializer
+
+from tensorpack.tfutils.summary import *
 from tensorpack.models import *
 from tensorpack.tfutils.tower import get_current_tower_context
 
 MOVING_AVERAGES_FACTOR = 0.9
-EPS = 0.0001
+EPS = 0.0001  # original value
+# EPS = 0.0005  # tinkering...
 NORM_PPF_0_75 = 0.6745
 
 
@@ -25,8 +28,8 @@ def QuantizedActiv(x, nbit=2):
         About multi-GPU training: moving averages across GPUs are not aggregated.
         Batch statistics are computed by main training tower. This is consistent with most frameworks.
     """
-    # init_basis = [(NORM_PPF_0_75 * 2 / (2 ** nbit - 1)) * (2. ** i) for i in range(nbit)]
-    # init_basis = tf.constant_initializer(init_basis)
+    init_basis = [(NORM_PPF_0_75 * 2 / (2 ** nbit - 1)) * (2. ** i) for i in range(nbit)]
+    init_basis = tf.constant_initializer(init_basis)
 
     bit_dims = [nbit, 1]
     num_levels = 2 ** nbit
@@ -50,8 +53,8 @@ def QuantizedActiv(x, nbit=2):
     with tf.variable_scope('ActivationQuantization'):
         basis = tf.get_variable(
             'basis', bit_dims, tf.float32,
-            # initializer=init_basis,
-            initializer=variance_scaling_initializer(factor=1.0, mode='FAN_AVG', uniform=False),
+            initializer=init_basis,
+            # initializer=variance_scaling_initializer(factor=1.0, mode='FAN_AVG', uniform=False),  # tinkering...
             trainable=False)
 
         ctx = get_current_tower_context()  # current tower context
@@ -261,13 +264,18 @@ def QuantizedWeight(name, x, n, nbit=2):
             for i in range(nbit):
                 new_basis_i = tf.multiply(BTxB_inv[i], BTxX)
                 new_basis_i = tf.matmul(sum_multiplier_basis, new_basis_i)
+                add_moving_summary(tf.reduce_mean(new_basis_i, name='new_basis_bit'+str(i)))
                 new_basis.append(new_basis_i)
             new_basis = tf.reshape(tf.stack(values=new_basis), [nbit, num_filters])
+            # add_tensor_summary(new_basis, ['histogram'], name='new_basis')
             # create moving averages op
             updata_moving_basis = moving_averages.assign_moving_average(
                 basis, new_basis, MOVING_AVERAGES_FACTOR)
             add_model_variable(basis)
             tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, updata_moving_basis)
+
+            # add_moving_summary(tf.identity(basis, name='basis'), tf.identity(new_basis, name='basis_new'))
+            # add_moving_summary(tf.identity(basis, name='basis'))
 
         y = x + tf.stop_gradient(-x) + tf.stop_gradient(y)  # gradient: y=x
         y.variables = VariableHolder(basis=basis)
