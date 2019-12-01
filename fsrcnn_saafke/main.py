@@ -12,6 +12,7 @@ import numpy
 from tensorflow.python.client import device_lib
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' #gets rid of avx/fma warning
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # TODO: 
 # Overlapping patches
