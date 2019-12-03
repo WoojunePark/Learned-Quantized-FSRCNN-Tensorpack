@@ -377,9 +377,9 @@ def Conv2DQuant(x, out_channel, kernel_shape,
     return ret
 
 
-def prelu(_x, scope=None):
+def prelu(_x, name=None):
     """parametric ReLU activation"""
-    with tf.variable_scope(name_or_scope=scope, default_name="prelu"):
+    with tf.variable_scope(name_or_scope=name, default_name="prelu"):
         _alpha = tf.get_variable("prelu", shape=_x.get_shape()[-1],
                                  dtype=_x.dtype, initializer=tf.constant_initializer(0.1))
         return tf.maximum(0.0, _x) + _alpha * tf.minimum(0.0, _x)

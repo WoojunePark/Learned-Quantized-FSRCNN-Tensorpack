@@ -50,7 +50,176 @@ class ImageDataFromZIPFile(RNGDataFlow):
         for archive in self.archivefiles:
             im_data = archive[0].read(archive[1])
             im_data = np.asarray(bytearray(im_data), dtype='uint8')
+            # im_data_hr = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
+            #
+            # im_data_lr = cv2.resize(im_data, dsize=(50, 50), interpolation=cv2.INTER_CUBIC)
+            # im_data_hrb = cv2.resize(im_data_lr, dsize=(100, 100), interpolation=cv2.INTER_CUBIC)
+            # yield [im_data_lr, im_data_hr, im_data_hrb]
             yield [im_data]
+
+
+class ImageEncode(MapDataComponent):
+    def __init__(self, ds, mode='.jpg', dtype=np.uint8, index=0):
+        def func(img):
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            return np.asarray(bytearray(cv2.imencode(mode, img)[1].tostring()), dtype=dtype)
+        super(ImageEncode, self).__init__(ds, func, index=index)
+
+
+class ImageDecodeBGR(MapDataComponent):
+    def __init__(self, ds, index=0):
+        def func(im_data):
+            img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
+            # print("type of img is : ", type(img))
+            return img
+        super(ImageDecodeBGR, self).__init__(ds, func, index=index)
+
+
+class ImageDecodeYCrCb(MapDataComponent):
+    def __init__(self, ds, index=0):
+        def func(im_data):
+            # set lr and hr sizes
+            size_lr = 10
+            if config.SCALE == 3:
+                size_lr = 7
+            elif config.SCALE == 4:
+                size_lr = 6
+            size_hr = size_lr * config.SCALE
+
+            # read
+            img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
+
+            # convert to YCrCb (cv2 reads images in BGR!), and normalize
+            img_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+            # img_ycc = cv2.cvtColor(im_data, cv2.COLOR_BGR2YCrCb)
+
+            # # resized, original, bicubic&bicubic
+            # lr_ycc = cv2.resize(img_ycc, dsize=(50, 50), interpolation=cv2.INTER_CUBIC)
+            # hr_bicubic_ycc = cv2.resize(lr_ycc, dsize=(100, 100), interpolation=cv2.INTER_CUBIC)
+
+            if config.CHANNELS == 1:
+                # input_bicubic_y, input_bicubic_cr, input_bicubic_cb = cv2.split(input_bicubic_ycc)
+
+                # only work on the luminance channel Y
+                lr_y = img_ycc[:, :, 0]
+                # hr_y = img_ycc[:, :, 0]
+                # hr_bicubic_y = hr_bicubic_ycc[:, :, 0]
+
+                # (1, 4, 100, 100, 1)
+                # im_y[:,0:0,:,:,:]
+                lr_y_ex = np.expand_dims(lr_y, axis=3)
+                # hr_y_ex = np.expand_dims(hr_y, axis=4)
+                # hr_bicubic_y_ex = np.expand_dims(hr_bicubic_y, axis=4)
+                return lr_y_ex
+            else:
+                return img_ycc
+
+        super(ImageDecodeYCrCb, self).__init__(ds, func, index=index)
+
+
+class ThreeInputs(RNGDataFlow):
+    def __init__(self, ds, index=0):
+        # resized, original, bicubic&bicubic
+        lr = cv2.resize(ds, dsize=(50, 50), interpolation=cv2.INTER_CUBIC)
+        hr_bicubic = cv2.resize(lr, dsize=(100, 100), interpolation=cv2.INTER_CUBIC)
+
+    def __len__(self):
+        return self.img.shape[0]
+
+    def __iter__(self):
+        yield [self.lr, self.ds, self.hr_bicubic]
+
+        # super(ThreeInputs, self).__init__(ds, func, index=index)
+
+
+class RejectTooSmallImages(MapDataComponent):
+    def __init__(self, ds, thresh=100, index=0):
+        def func(img):
+            # (50, 50) and (100, 100) at the same time version
+            # h0, w0, _ = img[0].shape
+            # h1, w1, _ = img[1].shape
+            # if (h1 < thresh) or (w1 < thresh):
+            #     return None
+            # else:
+            #     return img
+
+            # 1 img version
+            h, w = img.shape
+            if (h < thresh) or (w < thresh):
+                return None
+            else:
+                return img
+        super(RejectTooSmallImages, self).__init__(ds, func, index=index)
+
+
+class CenterSquareResize(MapDataComponent):
+    def __init__(self, ds, index=0):
+        """See section 5.3
+        """
+        def func(img):
+            try:
+                h, w, _ = img.shape
+                if h > w:
+                    off = (h - w) // 2
+                    if off > 0:
+                        img = img[off:-off, :, :]
+                if w > h:
+                    off = (w - h) // 2
+                    if off > 0:
+                        img = img[:, off:-off, :]
+
+                img = cv2.resize(img, (100, 100))
+                return img
+            except Exception:
+                return None
+        super(CenterSquareResize, self).__init__(ds, func, index=index)
+
+
+class MinMaxNormalize(PhotometricAugmentor):
+    """
+    Linearly scales the image to the range [min, max].
+
+    This augmentor always returns float32 images.
+    """
+    def __init__(self, min=0, max=255, all_channel=True):
+        """
+        Args:
+            max (float): The new maximum value
+            min (float): The new minimum value
+            all_channel (bool): if True, normalize all channels together. else separately.
+        """
+        self.max = max
+        self.min = min
+        self.all_channel = all_channel
+        self._init(locals())
+
+    def _augment(self, img, _):
+        img = img.astype('float32')
+        if self.all_channel:
+            # minimum = np.min(img)
+            # maximum = np.max(img)
+            minimum = np.amin(img)
+            maximum = np.amax(img)
+
+        else:
+            # minimum = np.min(img, axis=(0, 1), keepdims=True)
+            # maximum = np.max(img, axis=(0, 1), keepdims=True)
+            minimum = np.amin(img, initial=self.max, keepdims=True)
+            maximum = np.amax(img, initial=self.min, keepdims=True)
+
+        # time_name = time.ctime()
+        # time_name += '.jpg'
+        # imageio.imwrite(time_name, img[:, :, 0])
+
+        # if (maximum - minimum) < 1e-10:
+        #     print("adsdasdasdsadasdasd")
+        #     imageio.imwrite('poped_from_MinMaxNormalize.jpg', img[:, :, 0])
+
+        img = (self.max - self.min) * (img - minimum) / (maximum - minimum) + self.min
+
+        # imageio.imwrite('poped_from_MinMaxNormalize.jpg', img[:, :, 0])
+
+        return img
 
 
 def make_dataset(paths):
@@ -106,131 +275,6 @@ def make_dataset(paths):
                 x = crop_lr.reshape((size_lr, size_lr, 1))
                 y = crop_hr.reshape((size_hr, size_hr, 1))
                 yield x, y
-
-
-
-class ImageEncode(MapDataComponent):
-    def __init__(self, ds, mode='.jpg', dtype=np.uint8, index=0):
-        def func(img):
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            return np.asarray(bytearray(cv2.imencode(mode, img)[1].tostring()), dtype=dtype)
-        super(ImageEncode, self).__init__(ds, func, index=index)
-
-
-class ImageDecodeBGR(MapDataComponent):
-    def __init__(self, ds, index=0):
-        def func(im_data):
-            img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
-            # print("type of img is : ", type(img))
-            return img
-        super(ImageDecodeBGR, self).__init__(ds, func, index=index)
-
-
-class ImageDecodeYCrCb(MapDataComponent):
-    def __init__(self, ds, index=0):
-        def func(im_data):
-            # set lr and hr sizes
-            size_lr = 10
-            if config.SCALE == 3:
-                size_lr = 7
-            elif config.SCALE == 4:
-                size_lr = 6
-            size_hr = size_lr * config.SCALE
-
-            # read
-            img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
-            # convert to YCrCb (cv2 reads images in BGR!), and normalize
-            im_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
-
-            if config.CHANNELS == 1:
-                # only work on the luminance channel Y
-                im_y, im_cr, im_cb = cv2.split(im_ycc)
-                # im_y = im_ycc[:, :, 0]
-                im_y = np.expand_dims(im_y, axis=4)  # (b, 100, 100) -> (b, 100, 100, 1)
-                # (1, 4, 100, 100, 1)
-                # im_y[:,0:0,:,:,:]
-                # print("type of im_y is : ", type(im_y))
-                return im_y
-            else:
-                # print("type of im_ycc is : ", type(im_ycc))
-                return im_ycc
-
-        super(ImageDecodeYCrCb, self).__init__(ds, func, index=index)
-
-
-class RejectTooSmallImages(MapDataComponent):
-    def __init__(self, ds, thresh=100, index=0):
-        def func(img):
-            h, w, _ = img.shape
-            # h, w = img.shape
-            if (h < thresh) or (w < thresh):
-                return None
-            else:
-                return img
-        super(RejectTooSmallImages, self).__init__(ds, func, index=index)
-
-
-class CenterSquareResize(MapDataComponent):
-    def __init__(self, ds, index=0):
-        """See section 5.3
-        """
-        def func(img):
-            try:
-                h, w, _ = img.shape
-                if h > w:
-                    off = (h - w) // 2
-                    if off > 0:
-                        img = img[off:-off, :, :]
-                if w > h:
-                    off = (w - h) // 2
-                    if off > 0:
-                        img = img[:, off:-off, :]
-
-                img = cv2.resize(img, (100, 100))
-                return img
-            except Exception:
-                return None
-        super(CenterSquareResize, self).__init__(ds, func, index=index)
-
-
-class MinMaxNormalize(PhotometricAugmentor):
-    """
-    Linearly scales the image to the range [min, max].
-
-    This augmentor always returns float32 images.
-    """
-    def __init__(self, min=0, max=255, all_channel=True):
-        """
-        Args:
-            max (float): The new maximum value
-            min (float): The new minimum value
-            all_channel (bool): if True, normalize all channels together. else separately.
-        """
-        self._init(locals())
-
-    def _augment(self, img, _):
-        img = img.astype('float32')
-        if self.all_channel:
-            minimum = np.min(img)
-            maximum = np.max(img)
-        else:
-            minimum = np.min(img, axis=(0, 1), keepdims=True)
-            maximum = np.max(img, axis=(0, 1), keepdims=True)
-
-        # time_name = time.ctime()
-        # time_name += '.jpg'
-        # imageio.imwrite(time_name, img[:, :, 0])
-
-        # if (maximum - minimum) < 1e-10:
-        #     print("adsdasdasdsadasdasd")
-        #     imageio.imwrite('poped_from_MinMaxNormalize.jpg', img[:, :, 0])
-
-        img = (self.max - self.min) * (img - minimum) / (maximum - minimum) + self.min
-
-        # imageio.imwrite('poped_from_MinMaxNormalize.jpg', img[:, :, 0])
-
-        return img
-
 
 
 # Testcode for encode/decode.

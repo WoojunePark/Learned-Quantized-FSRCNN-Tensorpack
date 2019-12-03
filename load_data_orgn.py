@@ -58,7 +58,7 @@ def get_data(file_name, train_or_test):
             #         # imgaug.Saturation(0.4, rgb=False),  # only for RGB or BGR images!
             #         ]),
             #     ]), 0.7),
-            imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
+            # imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
             imgaug.RandomApplyAug(
                 imgaug.RandomOrderAug([
                     imgaug.Flip(horiz=True),
@@ -75,14 +75,19 @@ def get_data(file_name, train_or_test):
     else:
         augmentors = [
             imgaug.RandomCrop(100),
-            imgaug.MinMaxNormalize(0, config.NORMALIZE, all_channel=True),
+            imgaug.MinMaxNormalize(0, config.NORMALIZE, all_channel=False),
         ]
 
     ds = AugmentImageComponent(ds, augmentors, index=0, copy=True)
-    # ds = ThreeInputs(ds, index=0)
 
-    if isTrain:
-        ds = PrefetchData(ds, 2, 2)
+    #if isTrain:
+    #   ds = PrefetchData(ds, 2, 2)
+    ds = MapData(ds, lambda x: [np.expand_dims(cv2.resize(x[0], (50, 50), interpolation=cv2.INTER_CUBIC), axis=3),
+                                x[0],
+                                np.expand_dims(cv2.resize(cv2.resize(x[0], (50, 50), interpolation=cv2.INTER_CUBIC),
+                                           (100, 100), interpolation=cv2.INTER_CUBIC),axis=3),
+                                ])
+
     ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
     ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
     return ds

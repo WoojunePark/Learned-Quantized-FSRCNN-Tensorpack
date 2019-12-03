@@ -107,7 +107,7 @@ class ImageDecodeYCrCb(MapDataComponent):
 
                 # (1, 4, 100, 100, 1)
                 # im_y[:,0:0,:,:,:]
-                lr_y_ex = np.expand_dims(lr_y, axis=4)
+                lr_y_ex = np.expand_dims(lr_y, axis=3)
                 # hr_y_ex = np.expand_dims(hr_y, axis=4)
                 # hr_bicubic_y_ex = np.expand_dims(hr_bicubic_y, axis=4)
                 return lr_y_ex
@@ -188,16 +188,24 @@ class MinMaxNormalize(PhotometricAugmentor):
             min (float): The new minimum value
             all_channel (bool): if True, normalize all channels together. else separately.
         """
+        self.max = max
+        self.min = min
+        self.all_channel = all_channel
         self._init(locals())
 
     def _augment(self, img, _):
         img = img.astype('float32')
         if self.all_channel:
-            minimum = np.min(img)
-            maximum = np.max(img)
+            # minimum = np.min(img)
+            # maximum = np.max(img)
+            minimum = np.amin(img)
+            maximum = np.amax(img)
+
         else:
-            minimum = np.min(img, axis=(0, 1), keepdims=True)
-            maximum = np.max(img, axis=(0, 1), keepdims=True)
+            # minimum = np.min(img, axis=(0, 1), keepdims=True)
+            # maximum = np.max(img, axis=(0, 1), keepdims=True)
+            minimum = np.amin(img, initial=self.max, keepdims=True)
+            maximum = np.amax(img, initial=self.min, keepdims=True)
 
         # time_name = time.ctime()
         # time_name += '.jpg'

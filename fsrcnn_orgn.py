@@ -40,8 +40,8 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
     Returns:
         A scalar tensor representing the PSNR. (tf.psnr returns (psnr_value, 1) tensor.)
     """
-    prediction = tf.abs(prediction)
-    ground_truth = tf.abs(ground_truth)
+    # prediction = tf.abs(prediction)
+    # ground_truth = tf.abs(ground_truth)
 
     def log10(x):
         with tf.name_scope("log10"):
@@ -49,12 +49,15 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
             denominator = tf.log(tf.constant(10, dtype=numerator.dtype))
             return numerator / denominator
 
-    mse = tf.reduce_mean(tf.square(prediction - ground_truth))
+    # mse = tf.reduce_mean(tf.square(prediction - ground_truth))
+    mse = tf.losses.mean_squared_error(prediction, ground_truth)
+
     if maxp is None:
-        psnr = tf.multiply(log10(mse), -10., name=name)
+        psnr = tf.multiply(log10(mse), -10.0)
     else:
         maxp = float(maxp)
-        psnr = tf.multiply(log10(mse + 1e-6), -10.)
+        # psnr = tf.multiply(log10(mse + 1e-6), -10.0)
+        psnr = tf.multiply(log10(mse), -10.0)
         psnr = tf.add(tf.multiply(20., log10(maxp)), psnr, name=name)
     add_moving_summary(psnr)
     return psnr
@@ -76,13 +79,13 @@ class Model(ModelDesc):
         self.m = m
 
     def inputs(self):
-        return [tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'input_lr'),
-                # tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'input_hr'),
-                # tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'bicubic_hr')
+        return [tf.TensorSpec((None, self.height*0.5, self.width*0.5, config.CHANNELS), tf.float32, 'input_lr'),
+                tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'input_hr'),
+                tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'bicubic_hr')
                 ]
 
-    # def build_graph(self, input_lr, input_hr, bicubic_hr):
-    def build_graph(self, input_hr):
+    def build_graph(self, input_lr, input_hr, bicubic_hr):
+    # def build_graph(self, input_hr):
         # input_x = input_x / 128.0
         d = self.d
         s = self.s
@@ -90,15 +93,15 @@ class Model(ModelDesc):
 
         # https: // github.com / LoSealL / VideoSuperResolution / issues / 9
 
-        input_lr = tf.image.resize(
-            input_hr, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
-            name='input_lr')
-        input_lr = tf.saturate_cast(input_lr, tf.float32, name='input_lr')
-
-        bicubic_hr = tf.image.resize(
-            input_lr, [100, 100], method=tf.image.ResizeMethod.BICUBIC,
-            name='bicubic_hr')
-        bicubic_hr = tf.saturate_cast(bicubic_hr, tf.float32, name='bicubic_hr')
+        # input_lr = tf.image.resize(
+        #     input_hr, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
+        #     name='input_lr')
+        # input_lr = tf.saturate_cast(input_lr, tf.float32, name='input_lr')
+        #
+        # bicubic_hr = tf.image.resize(
+        #     input_lr, [100, 100], method=tf.image.ResizeMethod.BICUBIC,
+        #     name='bicubic_hr')
+        # bicubic_hr = tf.saturate_cast(bicubic_hr, tf.float32, name='bicubic_hr')
 
         # output_bicubic_nhwc = bicubic_hr
 
@@ -172,37 +175,36 @@ class Model(ModelDesc):
 
         # -- some outputs
         # out_nhwc = tf.transpose(layer, [0, 2, 3, 1], name="NHWC_output")  # From NCHW to NHWC
-        # psnr = psnr_calc(out_nhwc, input_x, maxp=config.NORMALIZE)
 
         psnr = psnr_calc(layer, input_hr, maxp=config.NORMALIZE)
-        psnr = psnr_calc(bicubic_hr, input_hr, maxp=config.NORMALIZE, name="psnr_bicubic_baseline")
-        # psnr_tf = tf.image.psnr(out_nhwc, input_x, max_val=1.0)  # outputs (psnr, 1) tensor...
-        print("PSNR: ", psnr)
+        # psnr_tf = tf.image.psnr(layer, input_hr, max_val=config.NORMALIZE)
 
-        # mse = tf.losses.mean_squared_error(out_nhwc, input_x)
+        psnr_base = psnr_calc(bicubic_hr, input_hr, maxp=config.NORMALIZE, name="psnr_bicubic_baseline")
+        # psnr_base_tf = tf.image.psnr(bicubic_hr, input_hr, max_val=config.NORMALIZE)
+        # psnr_tf = tf.image.psnr(out_nhwc, input_x, max_val=1.0)  # outputs (psnr, 1) tensor...
+
         mse = tf.losses.mean_squared_error(layer, input_hr)
         print("MSE: ", mse)
-        # add_moving_summary(tf.reduce_mean(mse, name='mean_squared_error_sum'))
-        mse_cost = tf.identity(mse, name='mean_squared_error_cost')
-        add_moving_summary(mse_cost)
 
         # wd_cost = tf.multiply(config.WEIGHT_DECAY, regularize_cost('.*/W', tf.nn.l2_loss), name='wd_cost')
         # add_moving_summary(mse, wd_cost)
 
         add_param_summary(('.*/W', ['histogram']),  # monitor ../Weight
                           ('.*/b', ['histogram']),  # monitor ../basis
-                          ('.*/n', ['histogram'])   # monitor ../new_basis_i
+                          ('.*/n', ['histogram']),   # monitor ../new_basis_i
+                          ('.*/p', ['histogram']),
+                          ('.*/v', ['histogram'])
                           )
 
         # self.cost = tf.add_n([mse, wd_cost], name='add_n_mse_wd_cost')
-        self.cost = mse_cost
+        self.cost = mse
 
         return self.cost
 
     def optimizer(self):
         lr = tf.get_variable('learning_rate', initializer=1e-3, trainable=False)
         # opt = tf.train.MomentumOptimizer(lr, 0.9)
-        opt = tf.train.AdamOptimizer(lr)
+        opt = tf.train.AdamOptimizer(learning_rate=lr)
         return opt
 
 
@@ -262,8 +264,8 @@ if __name__ == '__main__':
     logger.set_logger_dir(
         os.path.join('logger_log', config.LOG_DIR))
 
-    dataset_train = QueueInput(get_data(config.DATA_ZIP_DIR, 'train'))
-    dataset_test = QueueInput(get_data(config.DATA_ZIP_DIR, 'test'))
+    dataset_train = QueueInput(get_data(config.TRAIN_DATA_ZIP_DIR, 'train'))
+    dataset_test = QueueInput(get_data(config.VAL_DATA_ZIP_DIR, 'test'))
 
     if args.apply:
         apply(args.load, config.SROUTPUT_DIR)
@@ -276,7 +278,8 @@ if __name__ == '__main__':
             callbacks=[
                 ModelSaver(keep_checkpoint_every_n_hours=1),
                 InferenceRunner(dataset_test,
-                                [ScalarStats('mean_squared_error_cost')]),
+                                [ScalarStats('mean_squared_error/value')],
+                                ),
                 # ScheduledHyperParamSetter('learning_rate',
                 #                           [(1, 1e-4), (100, 1e-5), (160, 1e-6), (300, 1e-7)])
                 ScheduledHyperParamSetter('learning_rate',
