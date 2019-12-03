@@ -21,8 +21,8 @@ from PIL import Image
 import imageio
 import time
 
-import config_orgn as config
-from load_data_orgn import get_data
+import config_qa32_qw4_ch as config
+from load_data import get_data
 
 from learned_quantization import *
 
@@ -109,44 +109,53 @@ class Model(ModelDesc):
         # input_bicubic_nchw = tf.transpose(input_bicubic_nhwc, [0, 3, 1, 2])  # NHWC to NCHW
         # output_bicubic = tf.transpose(output_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        with argscope(Conv2D,
+        # with argscope(Conv2D,
+        #               data_format="NHWC",
+        #               padding='same', kernel_size=1, stride=1,
+        #               kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
+        #               bias_initializer=tf.constant_initializer(value=0.0),
+        #               activation=prelu, use_bias=True):
+        # ----------- orgn -----------
+        with argscope(Conv2DQuant,
                       data_format="NHWC",
-                      padding='same', kernel_size=1, stride=1,
-                      kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
-                      bias_initializer=tf.constant_initializer(value=0.0),
-                      activation=prelu, use_bias=True):
+                      padding='same', kernel_shape=1, stride=1,
+                      W_init=variance_scaling_initializer(mode='FAN_IN'),
+                      b_init=tf.constant_initializer(value=0.0),
+                      nl=prelu, use_bias=True, nbit=self.qw, is_quant=True):
+            # kernel_shape = kernel_size
             # W_init = kernel_initializer
+            # b_init = bias_initializer
             # nl = activation
 
             # feature extraction : 5x5 convolutions. (Non-Quantized)
-            layer = Conv2D('1_Fe_Ex', input_lr, d, kernel_size=5)
+            #layer = Conv2D('1_Fe_Ex', input_lr, d, kernel_size=5)
             # ----------- orgn -----------
-            # layer = Conv2DQuant('1_Fe_Ex', input_bicubic, d, kernel_shape=5, is_quant=False)
+            layer = Conv2DQuant('1_Fe_Ex', input_lr, d, kernel_shape=5, is_quant=False)
             print('1_Fe_Ex', layer)
 
             # shrinking : Reduction in feature maps.
-            layer = Conv2D('2_Shrnk', layer, s)
+            # layer = Conv2D('2_Shrnk', layer, s)
             # ----------- orgn -----------
-            # if self.qa > 0:
-            #     layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
-            # layer = Conv2DQuant('2_Shrnk', layer, s)
+            if self.qa > 0:
+                layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
+            layer = Conv2DQuant('2_Shrnk', layer, s)
             print('2_Shrnk', layer)
 
             # non-linear mappping : Multiple layers are applied 3x3.
             for i in range(0, m):
-                layer = Conv2D('3_Nl_Ma' + str(i), layer, s, kernel_size=3)
+                # layer = Conv2D('3_Nl_Ma' + str(i), layer, s, kernel_size=3)
                 # ----------- orgn -----------
-                # if self.qa > 0:
-                #     layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
-                # layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
+                if self.qa > 0:
+                    layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
+                layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
                 print('3_Nl_Ma', layer)
 
             # expanding : The feature map is now increased by 1x1 convolutions.
-            layer = Conv2D('4_Expan', layer, d)
+            # layer = Conv2D('4_Expan', layer, d)
             # ----------- orgn -----------
-            # if self.qa > 0:
-            #     layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
-            # layer = Conv2DQuant('4_Expan', layer, d)
+            if self.qa > 0:
+                layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
+            layer = Conv2DQuant('4_Expan', layer, d)
             print('4_Expan', layer)
 
             # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
@@ -157,11 +166,11 @@ class Model(ModelDesc):
             #                                padding='SAME', data_format="NCHW")
 
             # 2) sub-pixel
-            layer = Conv2D('5_Su_Px', layer, PS, activation=None, use_bias=False)
+            # layer = Conv2D('5_Su_Px', layer, PS, activation=None, use_bias=False)
             # ----------- orgn -----------
-            # if self.qa > 0:
-            #     layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
-            # layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
+            if self.qa > 0:
+                layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
+            layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
             print('5_Su_Px', layer)
 
             layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NHWC")
@@ -283,7 +292,7 @@ if __name__ == '__main__':
                 # ScheduledHyperParamSetter('learning_rate',
                 #                           [(1, 1e-4), (100, 1e-5), (160, 1e-6), (300, 1e-7)])
                 ScheduledHyperParamSetter('learning_rate',
-                                          [(1, 1e-3),(600, 1e-4),(1100, 1e-5)])
+                                          [(1, 1e-3)])
             ],
             max_epoch=config.MAX_EPOCH,
             nr_tower=max(get_num_gpu(), 1),

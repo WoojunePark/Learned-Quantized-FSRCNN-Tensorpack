@@ -121,7 +121,7 @@ class Model(ModelDesc):
                       padding='same', kernel_shape=1, stride=1,
                       W_init=variance_scaling_initializer(mode='FAN_IN'),
                       b_init=tf.constant_initializer(value=0.0),
-                      nl=prelu, use_bias=True, is_quant=True):
+                      nl=prelu, use_bias=True, nbit=self.qw, is_quant=True):
             # kernel_shape = kernel_size
             # W_init = kernel_initializer
             # b_init = bias_initializer

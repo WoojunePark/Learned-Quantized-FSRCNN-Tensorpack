@@ -23,7 +23,7 @@ CHANNELS = 1
 
 # hyper params
 SCALE = 2  # in 'int'
-QA = 4  # quantization activation  in 'int' QW < QA
+QA = 0  # quantization activation  in 'int' QW < QA
 QW = 8  # quantization weight in 'int'
 
 # for server1

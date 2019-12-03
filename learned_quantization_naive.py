@@ -92,7 +92,7 @@ def QuantizedActiv(x, nbit=2):
                     BTxB.append(BTxBij)
             BTxB = tf.reshape(tf.stack(values=BTxB), [nbit, nbit])
             # 1) naive
-            # BTxB_inv = tf.matrix_inverse(BTxB)
+            BTxB_inv = tf.matrix_inverse(BTxB)
 
             # 2) try excpet ->doesn't work well due to poor tf.matrix_inverse
             # try:
@@ -109,9 +109,9 @@ def QuantizedActiv(x, nbit=2):
                 BTxX.append(BTxXi0)
             BTxX = tf.reshape(tf.stack(values=BTxX), [nbit, 1])
 
-            # new_basis = tf.matmul(BTxB_inv, BTxX)  # calculate new basis
+            new_basis = tf.matmul(BTxB_inv, BTxX)  # calculate new basis
             # 3) gaussian elimination
-            new_basis = tf.linalg.lstsq(BTxB, BTxX, fast=False, l2_regularizer=1e-5)
+            # new_basis = tf.linalg.lstsq(BTxB, BTxX, fast=False, l2_regularizer=1e-5)
 
             # create moving averages op
             updata_moving_basis = moving_averages.assign_moving_average(

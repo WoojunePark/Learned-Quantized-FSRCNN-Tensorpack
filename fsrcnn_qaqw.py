@@ -109,13 +109,22 @@ class Model(ModelDesc):
         # input_bicubic_nchw = tf.transpose(input_bicubic_nhwc, [0, 3, 1, 2])  # NHWC to NCHW
         # output_bicubic = tf.transpose(output_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        with argscope(Conv2D,
+        # with argscope(Conv2D,
+        #               data_format="NHWC",
+        #               padding='same', kernel_size=1, stride=1,
+        #               kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
+        #               bias_initializer=tf.constant_initializer(value=0.0),
+        #               activation=prelu, use_bias=True):
+        # ----------- orgn -----------
+        with argscope(Conv2DQuant,
                       data_format="NHWC",
-                      padding='same', kernel_size=1, stride=1,
-                      kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
-                      bias_initializer=tf.constant_initializer(value=0.0),
-                      activation=prelu, use_bias=True):
+                      padding='same', kernel_shape=1, stride=1,
+                      W_init=variance_scaling_initializer(mode='FAN_IN'),
+                      b_init=tf.constant_initializer(value=0.0),
+                      nl=prelu, use_bias=True, nbit=self.qw, is_quant=True):
+            # kernel_shape = kernel_size
             # W_init = kernel_initializer
+            # b_init = bias_initializer
             # nl = activation
 
             # feature extraction : 5x5 convolutions. (Non-Quantized)
