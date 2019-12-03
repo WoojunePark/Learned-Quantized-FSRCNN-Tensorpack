@@ -21,7 +21,8 @@ from PIL import Image
 import imageio
 import time
 
-import config
+import config_qaqw as config
+
 from load_data import get_data
 from learned_quantization import *
 

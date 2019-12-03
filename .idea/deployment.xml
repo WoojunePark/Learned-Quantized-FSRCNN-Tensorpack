@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="130" autoUploadExternalChanges="true">
+  <component name="PublishConfigData" autoUpload="Always" serverName="46" autoUploadExternalChanges="true">
     <serverData>
       <paths name="130">
         <serverdata>
           <mappings>
             <mapping deploy="/home/wjpark/pycharm_project/tensorpack_study" local="$PROJECT_DIR$" />
+            <mapping local="" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="46">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/saehyun/parasite/pycharm_project/tensorpack_study" local="$PROJECT_DIR$" />
             <mapping local="" />
           </mappings>
         </serverdata>

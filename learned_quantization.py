@@ -54,7 +54,6 @@ def QuantizedActiv(x, nbit=2):
         basis = tf.get_variable(
             'basis', bit_dims, tf.float32,
             initializer=init_basis,
-            # initializer=variance_scaling_initializer(factor=1.0, mode='FAN_AVG', uniform=False),  # tinkering...
             trainable=False)
 
         ctx = get_current_tower_context()  # current tower context

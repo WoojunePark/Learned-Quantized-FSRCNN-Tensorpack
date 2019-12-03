@@ -1,21 +1,12 @@
 # environment related
 # DATA_DIR = "/database/wjpark_db/General-100"  # in 'string'
-
-# for server1
-# DATA_ZIP_DIR = '/database/wjpark_db/General-100_comp/General-100.zip'   # in 'string'
-# LOG_DIR = '/home/wjpark/pycharm_project/tensorpack_study/log_fsrcnn_orgn/'  # in 'string'
-# GPU = "0, 1"  # comma separated list of GPU(s) to use. in 'string'
-# DATAFLOW_PROC = 2
-# LOWRES_DIR = '/home/wjpark/pycharm_project/tensorpack_study/test.zip'
-# SROUTPUT_DIR = '/home/wjpark/pycharm_project/tensorpack_study/'
-
-# for server2
-DATA_ZIP_DIR = '/database/saehyun/parasite/General-100_comp/General-100.zip'   # in 'string'
-LOG_DIR = '/home/saehyun/parasite/pycharm_project/tensorpack_study/log_fsrcnn_orgn/'  # in 'string'
-GPU = "0, 1"  # comma separated list of GPU(s) to use. in 'string'
+DATA_ZIP_DIR = '/database/wjpark_db/General-100_comp/General-100.zip'   # in 'string'
+LOG_DIR = '/home/wjpark/pycharm_project/tensorpack_study/log_fsrcnn_qaqw/'  # in 'string'
+GPU = "1"  # comma separated list of GPU(s) to use. in 'string'
 DATAFLOW_PROC = 2
-LOWRES_DIR = '/home/saehyun/parasite/pycharm_project/tensorpack_study/test.zip'
-SROUTPUT_DIR = '/home/saehyun/parasite/pycharm_project/tensorpack_study/'
+LOWRES_DIR = '/home/wjpark/pycharm_project/tensorpack_study/test.zip'
+SROUTPUT_DIR = '/home/wjpark/pycharm_project/tensorpack_study/'
+
 
 # train related
 BATCH_SIZE = 4
@@ -39,7 +30,7 @@ CHANNELS = 1
 
 # hyper params
 SCALE = 2  # in 'int'
-QA = 4  # quantization activation  in 'int' QW < QA
+QA = 2  # quantization activation  in 'int' QW < QA
 QW = 8  # quantization weight in 'int'
 
 # parser.add_argument("--dataset",default="data/General-100") V

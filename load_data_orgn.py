@@ -18,15 +18,16 @@ from tensorpack.utils.gpu import get_num_gpu
 import imageio
 import time
 
-from data_sampler import CenterSquareResize, ImageDataFromZIPFile, \
-    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages, MinMaxNormalize
+from data_sampler_orgn import CenterSquareResize, ImageDataFromZIPFile, \
+    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages, MinMaxNormalize, ThreeInputs
 
-import config
+import config_orgn as config
 import learned_quantization
 
 
 def get_data(file_name, train_or_test):
     isTrain = train_or_test == 'train'
+
     if file_name.endswith('.lmdb'):
         ds = LMDBSerializer.load(file_name, shuffle=True)
         if config.USE_YCBCR is True:
@@ -39,16 +40,16 @@ def get_data(file_name, train_or_test):
             ds = ImageDecodeYCrCb(ds, index=0)
         else:
             ds = ImageDecodeBGR(ds, index=0)
-        ds = RejectTooSmallImages(ds, thresh=100, index=0)
+        # ds = RejectTooSmallImages(ds, thresh=100, index=0)
         # ds = CenterSquareResize(ds, index=0)
     else:
         raise ValueError("Unknown file format " + file_name)
 
     if isTrain:
         augmentors = [
+            # imgaug.ToFloat32,
+            # MinMaxNormalize(0, 255, all_channel=False),
             imgaug.RandomCrop(100),
-            # imgaug.Flip(horiz=True),
-            # imgaug.MinMaxNormalize(0, 255, all_channel=False),
             # imgaug.RandomApplyAug(imgaug.RandomChooseAug([
             #     imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
             #     imgaug.RandomOrderAug([
@@ -60,7 +61,6 @@ def get_data(file_name, train_or_test):
             imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
             imgaug.RandomApplyAug(
                 imgaug.RandomOrderAug([
-                    # imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
                     imgaug.Flip(horiz=True),
                     imgaug.Flip(vert=True),
                     # imgaug.BrightnessScale((0.98, 1.02), clip=True),
@@ -79,13 +79,12 @@ def get_data(file_name, train_or_test):
         ]
 
     ds = AugmentImageComponent(ds, augmentors, index=0, copy=True)
+    # ds = ThreeInputs(ds, index=0)
 
-    # ds = AugmentImageComponent(ds, augmentors)
-    # ds = MapData(ds, lambda x: [cv2.resize(x[0], (32, 32), interpolation=cv2.INTER_CUBIC), x[0]])
-    ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
     if isTrain:
         ds = PrefetchData(ds, 2, 2)
     ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
+    ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
     return ds
 
 
