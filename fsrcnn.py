@@ -11,15 +11,8 @@ from tensorpack import *
 from tensorpack.dataflow.serialize import *
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
 from tensorpack.tfutils.summary import add_moving_summary
-from tensorpack.dataflow import dataset
-from tensorpack.tfutils.summary import *
 from tensorpack.utils import logger
 from tensorpack.utils.gpu import get_num_gpu
-
-from PIL import Image
-
-import imageio
-import time
 
 import config
 from load_data import get_data
@@ -29,7 +22,7 @@ from learned_quantization import *
 PS = config.CHANNELS * (config.SCALE ** 2)  # for sub-pixel, PS = Phase Shift
 
 
-def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
+def psnr_calc(prediction, ground_truth, maxp=1.0, name='psnr'):
     """`Peek Signal to Noise Ratio <https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio>`_.
     .. math::
         PSNR = 20 \cdot \log_{10}(MAX_p) - 10 \cdot \log_{10}(MSE)
@@ -42,14 +35,12 @@ def psnr_calc(prediction, ground_truth, maxp=None, name='psnr'):
     """
     # prediction = tf.abs(prediction)
     # ground_truth = tf.abs(ground_truth)
-
     def log10(x):
         with tf.name_scope("log10"):
             numerator = tf.log(x)
             denominator = tf.log(tf.constant(10, dtype=numerator.dtype))
             return numerator / denominator
 
-    # mse = tf.reduce_mean(tf.square(prediction - ground_truth))
     mse = tf.losses.mean_squared_error(prediction, ground_truth)
 
     if maxp is None:
@@ -79,135 +70,111 @@ class Model(ModelDesc):
         self.m = m
 
     def inputs(self):
-        return [tf.TensorSpec((None, self.height*0.5, self.width*0.5, config.CHANNELS), tf.float32, 'input_lr'),
-                tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'input_hr'),
-                tf.TensorSpec((None, self.height, self.width, config.CHANNELS), tf.float32, 'bicubic_hr')
+        return [tf.TensorSpec((None, self.width*0.5, self.height*0.5, config.CHANNELS), tf.float32, 'input_lr'),
+                tf.TensorSpec((None, self.width, self.height, config.CHANNELS), tf.float32, 'input_hr'),
+                tf.TensorSpec((None, self.width, self.height, config.CHANNELS), tf.float32, 'bicubic_hr')
                 ]
 
     def build_graph(self, input_lr, input_hr, bicubic_hr):
-    # def build_graph(self, input_hr):
-        # input_x = input_x / 128.0
         d = self.d
         s = self.s
         m = self.m
-
-        # https: // github.com / LoSealL / VideoSuperResolution / issues / 9
-
-        # input_lr = tf.image.resize(
-        #     input_hr, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
-        #     name='input_lr')
-        # input_lr = tf.saturate_cast(input_lr, tf.float32, name='input_lr')
-        #
-        # bicubic_hr = tf.image.resize(
-        #     input_lr, [100, 100], method=tf.image.ResizeMethod.BICUBIC,
-        #     name='bicubic_hr')
-        # bicubic_hr = tf.saturate_cast(bicubic_hr, tf.float32, name='bicubic_hr')
-
-        # output_bicubic_nhwc = bicubic_hr
-
         assert tf.test.is_gpu_available()
-        # input_bicubic_nchw = tf.transpose(input_bicubic_nhwc, [0, 3, 1, 2])  # NHWC to NCHW
-        # output_bicubic = tf.transpose(output_bicubic, [0, 3, 1, 2])  # NHWC to NCHW
 
-        # with argscope(Conv2D,
-        #               data_format="NHWC",
-        #               padding='same', kernel_size=1, stride=1,
-        #               kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
-        #               bias_initializer=tf.constant_initializer(value=0.0),
-        #               activation=prelu, use_bias=True):
-        # ----------- orgn -----------
-        with argscope(Conv2DQuant,
+        with argscope(Conv2D,
                       data_format="NHWC",
-                      padding='same', kernel_shape=1, stride=1,
-                      W_init=variance_scaling_initializer(mode='FAN_IN'),
-                      b_init=tf.constant_initializer(value=0.0),
-                      nl=prelu, use_bias=True, nbit=self.qw, is_quant=True):
-            # kernel_shape = kernel_size
-            # W_init = kernel_initializer
-            # b_init = bias_initializer
-            # nl = activation
+                      padding='same', kernel_size=1, stride=1,
+                      kernel_initializer=variance_scaling_initializer(mode='FAN_IN'),
+                      bias_initializer=tf.constant_initializer(value=0.0),
+                      activation=prelu, use_bias=True):
+            with argscope(Conv2DQuant,
+                          data_format="NHWC",
+                          padding='same', kernel_shape=1, stride=1,
+                          W_init=variance_scaling_initializer(mode='FAN_IN'),
+                          b_init=tf.constant_initializer(value=0.0),
+                          nl=prelu, use_bias=True, nbit=self.qw, is_quant=True):
+                # kernel_shape = kernel_size
+                # W_init = kernel_initializer
+                # b_init = bias_initializer
+                # nl = activation
 
-            # feature extraction : 5x5 convolutions. (Non-Quantized)
-            #layer = Conv2D('1_Fe_Ex', input_lr, d, kernel_size=5)
-            # ----------- orgn -----------
-            layer = Conv2DQuant('1_Fe_Ex', input_lr, d, kernel_shape=5, is_quant=False)
-            print('1_Fe_Ex', layer)
+                # feature extraction : 5x5 convolutions. (Non-Quantized)
+                if config.ORIGINAL_FSRCNN is True:
+                    layer = Conv2D('1_Fe_Ex', input_lr, d, kernel_size=5)
+                else:
+                    layer = Conv2DQuant('1_Fe_Ex', input_lr, d, kernel_shape=5, is_quant=False)
+                print('1_Fe_Ex', layer)
 
-            # shrinking : Reduction in feature maps.
-            # layer = Conv2D('2_Shrnk', layer, s)
-            # ----------- orgn -----------
-            if self.qa > 0:
-                layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
-            layer = Conv2DQuant('2_Shrnk', layer, s)
-            print('2_Shrnk', layer)
+                # shrinking : Reduction in feature maps.
+                if config.ORIGINAL_FSRCNN is True:
+                    layer = Conv2D('2_Shrnk', layer, s)
+                else:
+                    if self.qa > 0:
+                        layer = QuantizedActiv('2_Shrnk_QA', layer, nbit=self.qa)
+                    layer = Conv2DQuant('2_Shrnk', layer, s)
+                print('2_Shrnk', layer)
 
-            # non-linear mappping : Multiple layers are applied 3x3.
-            for i in range(0, m):
-                # layer = Conv2D('3_Nl_Ma' + str(i), layer, s, kernel_size=3)
-                # ----------- orgn -----------
-                if self.qa > 0:
-                    layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
-                layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
-                print('3_Nl_Ma', layer)
+                # non-linear mappping : Multiple layers are applied 3x3.
+                for i in range(0, m):
+                    if config.ORIGINAL_FSRCNN is True:
+                        layer = Conv2D('3_Nl_Ma' + str(i), layer, s, kernel_size=3)
+                    else:
+                        if self.qa > 0:
+                            layer = QuantizedActiv('3_Nl_Ma_QA'+str(i), layer, nbit=self.qa)
+                        layer = Conv2DQuant('3_Nl_Ma'+str(i), layer, s, kernel_shape=3)
+                    print('3_Nl_Ma', layer)
 
-            # expanding : The feature map is now increased by 1x1 convolutions.
-            # layer = Conv2D('4_Expan', layer, d)
-            # ----------- orgn -----------
-            if self.qa > 0:
-                layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
-            layer = Conv2DQuant('4_Expan', layer, d)
-            print('4_Expan', layer)
+                # expanding : The feature map is now increased by 1x1 convolutions.
+                if config.ORIGINAL_FSRCNN is True:
+                    layer = Conv2D('4_Expan', layer, d)
+                else:
+                    if self.qa > 0:
+                        layer = QuantizedActiv('4_Expan_QA', layer, self.qa)
+                    layer = Conv2DQuant('4_Expan', layer, d)
+                print('4_Expan', layer)
 
-            # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
-            # tr_output_shape = calculate_output_shape(layer, 9, 9, 2, 2, 1)
-            # layer = tf.nn.conv2d_transpose(name='5_Tr_Cv', input=layer, filters=[9, 9, 1, d],
-            #                                output_shape=tr_output_shape,
-            #                                strides=2,
-            #                                padding='SAME', data_format="NCHW")
+                # 1) transposed conv : High resolution image is reconstructed using 9x9 filter.
+                # tr_output_shape = calculate_output_shape(layer, 9, 9, 2, 2, 1)
+                # layer = tf.nn.conv2d_transpose(name='5_Tr_Cv', input=layer, filters=[9, 9, 1, d],
+                #                                output_shape=tr_output_shape,
+                #                                strides=2,
+                #                                padding='SAME', data_format="NCHW")
 
-            # 2) sub-pixel
-            # layer = Conv2D('5_Su_Px', layer, PS, activation=None, use_bias=False)
-            # ----------- orgn -----------
-            if self.qa > 0:
-                layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
-            layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
-            print('5_Su_Px', layer)
+                # 2) sub-pixel
+                if config.ORIGINAL_FSRCNN is True:
+                    layer = Conv2D('5_Su_Px', layer, PS, activation=None, use_bias=False)
+                else:
+                    if self.qa > 0:
+                        layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
+                    layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
+                print('5_Su_Px', layer)
 
-            layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NHWC")
+                layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NHWC")
 
-            # bias_initializer = tf.constant_initializer(value=0.0)
-            bias = tf.get_variable(shape=[config.CHANNELS], initializer=tf.constant_initializer(value=0.0), name='bias_Su_Px')
-            # layer = tf.nn.bias_add(layer, bias, data_format="NCHW", name="NCHW_output")
-            # print('NCHW_output', layer)
-            layer = tf.nn.bias_add(layer, bias, data_format="NHWC", name="NHWC_output")
-            print('NHWC_output', layer)
+                # bias_initializer = tf.constant_initializer(value=0.0)
+                bias = tf.get_variable(shape=[config.CHANNELS], initializer=tf.constant_initializer(value=0.0), name='bias_Su_Px')
+
+                layer = tf.nn.bias_add(layer, bias, data_format="NHWC", name="NHWC_output")
+                print('NHWC_output', layer)
 
         # -- some outputs
-        # out_nhwc = tf.transpose(layer, [0, 2, 3, 1], name="NHWC_output")  # From NCHW to NHWC
-
         psnr = psnr_calc(layer, input_hr, maxp=config.NORMALIZE)
-        # psnr_tf = tf.image.psnr(layer, input_hr, max_val=config.NORMALIZE)
-
         psnr_base = psnr_calc(bicubic_hr, input_hr, maxp=config.NORMALIZE, name="psnr_bicubic_baseline")
-        # psnr_base_tf = tf.image.psnr(bicubic_hr, input_hr, max_val=config.NORMALIZE)
-        # psnr_tf = tf.image.psnr(out_nhwc, input_x, max_val=1.0)  # outputs (psnr, 1) tensor...
 
         mse = tf.losses.mean_squared_error(layer, input_hr)
         print("MSE: ", mse)
 
-        # wd_cost = tf.multiply(config.WEIGHT_DECAY, regularize_cost('.*/W', tf.nn.l2_loss), name='wd_cost')
-        # add_moving_summary(mse, wd_cost)
-
         add_param_summary(('.*/W', ['histogram']),  # monitor ../Weight
                           ('.*/b', ['histogram']),  # monitor ../basis
-                          ('.*/n', ['histogram']),   # monitor ../new_basis_i
+                          ('.*/n', ['histogram']),  # monitor ../new_basis_i
                           ('.*/p', ['histogram']),
                           ('.*/v', ['histogram'])
                           )
 
+        # wd_cost = tf.multiply(config.WEIGHT_DECAY, regularize_cost('.*/W', tf.nn.l2_loss), name='wd_cost')
+        # add_moving_summary(mse, wd_cost)
         # self.cost = tf.add_n([mse, wd_cost], name='add_n_mse_wd_cost')
         self.cost = mse
-
         return self.cost
 
     def optimizer(self):
@@ -218,25 +185,66 @@ class Model(ModelDesc):
 
 
 def apply(model_path, output_path='.'):
-    assert os.path.isfile(config.LOWRES_DIR)
-    assert os.path.isdir(output_path)
+    fullimg = cv2.imread(config.LOWRES_DIR, 3)
+    width = fullimg.shape[0]
+    scaled_width = width - (width % config.SCALE)
+    height = fullimg.shape[1]
+    scaled_height = height - (height % config.SCALE)
+    cropped = fullimg[0:scaled_width, 0:scaled_height, :]
 
-    input_x = get_data(config.LOWRES_DIR, 'test')
-    input_bicubic = tf.image.resize(
-        input_x, [50, 50], method=tf.image.ResizeMethod.BICUBIC,
-        name='input_lr')
+    img_ycc = cv2.cvtColor(cropped, cv2.COLOR_BGR2YCrCb)
+    if config.CHANNELS == 1:
+        # only work on the luminance channel Y
+        img_y = img_ycc[:, :, 0]
 
-    predict_func = OfflinePredictor(PredictConfig(
-        model=Model(d=args.fsrcnn_d, s=args.fsrcnn_s, m=args.fsrcnn_m, qw=args.qw, qa=args.qa),
-        session_init=SmartInit(model_path),
-        input_names=['input_lr'],
-        output_names=['NHWC_output']))
+        input_hr_0 = img_y
+        input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+        input_hr = np.reshape(input_hr_norm, (1, scaled_width, scaled_height, 1))
+    else:
+        input_hr_0 = img_ycc
+        input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+        input_hr = np.reshape(input_hr_norm,(1, scaled_width, scaled_height, 1))
 
-    pred = predict_func(input_bicubic[None, ...])
-    p = np.clip(pred[0][0, ...], 0, 255)
+    input_lr_0 = cv2.resize(input_hr_norm, None, fx=1. / config.SCALE, fy=1. / config.SCALE, interpolation=cv2.INTER_CUBIC)
+    input_lr = np.reshape(input_lr_0, (1, input_lr_0.shape[0], input_lr_0.shape[1], 1))
 
-    cv2.imwrite(os.path.join(output_path, "SR_output.png"), pred)
-    cv2.imwrite(os.path.join(output_path, "input_bicubic.png"), input_x)
+    bicubic_hr_0 = cv2.resize(input_lr_0, None, fx=1.*config.SCALE, fy=1.*config.SCALE, interpolation=cv2.INTER_CUBIC)
+    bicubic_hr = np.reshape(bicubic_hr_0, (1, scaled_width, scaled_height, 1))
+
+    pred_config = PredictConfig(model=Model(d=config.FSRCNN_D,
+                                            s=config.FSRCNN_S,
+                                            m=config.FSRCNN_M,
+                                            qw=config.QW,
+                                            qa=config.QA,
+                                            height=scaled_height,
+                                            width=scaled_width
+                                            ),
+                                session_init=SmartInit(model_path),
+                                input_names=['input_lr', 'input_hr', 'bicubic_hr'],
+                                output_names=['NHWC_output', 'psnr', 'input_lr', 'psnr_bicubic_baseline'])
+
+    predictor = OfflinePredictor(pred_config)
+
+    NHWC_output, psnr, input_lr_out, psnr_base = predictor(input_lr, input_hr, bicubic_hr)
+
+    NHWC_output = (NHWC_output * 255.0).clip(min=0, max=255)
+    NHWC_output = (NHWC_output).astype(np.uint8)
+    NHWC_output = np.reshape(NHWC_output, (scaled_width, scaled_height, 1))
+
+    print("PSNR of fsrcnn  upscaled image: {}".format(psnr))
+    print("PSNR of bicubic upscaled image: {}".format(psnr_base))
+
+    img_y_ex = np.expand_dims(img_y, axis=3)
+    bicubic_hr_out = bicubic_hr_0.astype(np.float32) * 255.0
+
+    if config.ORIGINAL_FSRCNN is True:
+        cv2.imwrite(output_path+'orgn'+'_psnr('+ str(psnr)+")_fsrcnnOutput.png",NHWC_output)
+        cv2.imwrite(output_path+'orgn'+'_psnrbase(' + str(psnr_base) + ")_bicubicOutput.png", bicubic_hr_out)
+        cv2.imwrite(output_path+'orgn'+'_input.png', img_y_ex)
+    else:
+        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnr('+str(psnr)+")_fsrcnnOutput.png", NHWC_output)
+        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnrbase('+str(psnr_base)+")_bicubicOutput.png", bicubic_hr_out)
+        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_input.png', img_y_ex)
 
 
 if __name__ == '__main__':
@@ -300,5 +308,3 @@ if __name__ == '__main__':
         )
         num_gpu = max(get_num_gpu(), 1)
         launch_train_with_config(train_config, SyncMultiGPUTrainerParameterServer(num_gpu))
-
-#

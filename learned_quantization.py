@@ -8,8 +8,7 @@ from tensorpack.models import *
 from tensorpack.tfutils.tower import get_current_tower_context
 
 MOVING_AVERAGES_FACTOR = 0.9
-EPS = 0.0001  # original value
-# EPS = 0.0005  # tinkering...
+EPS = 0.0001
 NORM_PPF_0_75 = 0.6745
 
 

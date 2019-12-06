@@ -5,7 +5,6 @@ import sys
 import cv2
 import six
 import tensorflow as tf
-import matplotlib.pyplot as plt
 
 from tensorpack import *
 from tensorpack.dataflow import *
@@ -13,16 +12,14 @@ from tensorpack.dataflow.serialize import *
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
 from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.utils import logger
-from tensorpack.utils.gpu import get_num_gpu
 
 import imageio
 import time
 
 from data_sampler import CenterSquareResize, ImageDataFromZIPFile, \
-    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages, MinMaxNormalize, ThreeInputs
+    ImageDecodeYCrCb, ImageDecodeBGR, RejectTooSmallImages, MinMaxNormalize
 
 import config
-import learned_quantization
 
 
 def get_data(file_name, train_or_test):
@@ -47,8 +44,6 @@ def get_data(file_name, train_or_test):
 
     if isTrain:
         augmentors = [
-            # imgaug.ToFloat32,
-            # MinMaxNormalize(0, 255, all_channel=False),
             imgaug.RandomCrop(100),
             # imgaug.RandomApplyAug(imgaug.RandomChooseAug([
             #     imgaug.SaltPepperNoise(white_prob=0.01, black_prob=0.01),
@@ -80,16 +75,18 @@ def get_data(file_name, train_or_test):
 
     ds = AugmentImageComponent(ds, augmentors, index=0, copy=True)
 
-    #if isTrain:
-    #   ds = PrefetchData(ds, 2, 2)
+    # if isTrain:
+    #     ds = PrefetchData(ds, 2, 2)
     ds = MapData(ds, lambda x: [np.expand_dims(cv2.resize(x[0], (50, 50), interpolation=cv2.INTER_CUBIC), axis=3),
                                 x[0],
                                 np.expand_dims(cv2.resize(cv2.resize(x[0], (50, 50), interpolation=cv2.INTER_CUBIC),
                                            (100, 100), interpolation=cv2.INTER_CUBIC),axis=3),
                                 ])
 
-    ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
-    ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
+    if isTrain:
+        ds = MultiProcessRunnerZMQ(ds, config.DATAFLOW_PROC)
+        ds = BatchData(ds, config.BATCH_SIZE, remainder=not isTrain)
+
     return ds
 
 
@@ -108,10 +105,7 @@ if __name__ == '__main__':
     isSpeed = args.test == 'speed'
     os.environ['CUDA_VISIBLE_DEVICES'] = config.GPU
     if isSpeed is True:
-        # for dataflow loading speed test
-        # from tensorpack.dataflow.common import TestDataSpeed
         ds = _get_data_readonly(config.DATA_ZIP_DIR, 'train')
-        # size doesn't matter unless < all_data/batch.
         TestDataSpeed(ds, size=10).start()
         print("speed test done!")
         sys.exit(0)
@@ -126,12 +120,3 @@ if __name__ == '__main__':
             imageio.imwrite(time_name, i[0,0, :, :, 0])
         print("shape test done!")
         sys.exit(0)
-#
-        """
-        # >>>
-        # (1, 5, 100, 100, 3)
-        # (1, 5, 100, 100, 3)
-        # (1, 5, 100, 100, 3)
-        # ...
-        # (?, batch size, h, w, c) x (# of data/batch size)
-        """
