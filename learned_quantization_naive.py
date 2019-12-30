@@ -466,3 +466,4 @@ def getPReLUQuant(x, name=None):
     x = QuantizedActiv('quant', x)
     return x
 #
+

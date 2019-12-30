@@ -3,12 +3,15 @@ import numpy as np
 import os
 import cv2
 import six
+import zipfile
+import glob
 
 import tensorflow as tf
 from tensorflow.contrib.layers import variance_scaling_initializer
 
 from tensorpack import *
 from tensorpack.dataflow.serialize import *
+from tensorpack.tfutils import optimizer, gradproc
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
 from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.utils import logger
@@ -140,15 +143,18 @@ class Model(ModelDesc):
                 #                                strides=2,
                 #                                padding='SAME', data_format="NCHW")
 
+                # layer = tf.nn.conv2d_transpose(name="5_Tr_Cv", input=layer, filters=[9.0, 9.0, 1.0, d],
+                #                                output_shape=[config.BATCH_SIZE,self.width,self.width,config.CHANNELS],
+                #                                strides=[1,2,2,1], padding='SAME', data_format="NHWC")
+
                 # 2) sub-pixel
                 if config.ORIGINAL_FSRCNN is True:
-                    layer = Conv2D('5_Su_Px', layer, PS, activation=None, use_bias=False)
+                    layer = Conv2D('5_Su_Px', layer, PS, activation=None)
                 else:
                     if self.qa > 0:
                         layer = QuantizedActiv('5_Su_Px_QA', layer, self.qa)
                     layer = Conv2DQuant('5_Su_Px', layer, PS, is_quant=False)
                 print('5_Su_Px', layer)
-
                 layer = tf.nn.depth_to_space(layer, config.SCALE, data_format="NHWC")
 
                 # bias_initializer = tf.constant_initializer(value=0.0)
@@ -181,70 +187,84 @@ class Model(ModelDesc):
         lr = tf.get_variable('learning_rate', initializer=1e-3, trainable=False)
         # opt = tf.train.MomentumOptimizer(lr, 0.9)
         opt = tf.train.AdamOptimizer(learning_rate=lr)
-        return opt
+        # return opt
+        return optimizer.apply_grad_processors(opt, [gradproc.ScaleGradient(('5_Tr_Cv.*', 0.1)), gradproc.SummaryGradient()])
 
 
 def apply(model_path, output_path='.'):
-    fullimg = cv2.imread(config.LOWRES_DIR, 3)
-    width = fullimg.shape[0]
-    scaled_width = width - (width % config.SCALE)
-    height = fullimg.shape[1]
-    scaled_height = height - (height % config.SCALE)
-    cropped = fullimg[0:scaled_width, 0:scaled_height, :]
+    psnr_list = []
+    psnr_base_list = []
+    img_num = 1
 
-    img_ycc = cv2.cvtColor(cropped, cv2.COLOR_BGR2YCrCb)
-    if config.CHANNELS == 1:
-        # only work on the luminance channel Y
-        img_y = img_ycc[:, :, 0]
+    for img in glob.glob(config.LOWRES_DIR+"/*.png"):
+        fullimg = cv2.imread(img, 3)
+        width = fullimg.shape[0]
+        scaled_width = width - (width % config.SCALE)
+        height = fullimg.shape[1]
+        scaled_height = height - (height % config.SCALE)
+        cropped = fullimg[0:scaled_width, 0:scaled_height, :]
 
-        input_hr_0 = img_y
-        input_hr_norm = input_hr_0.astype(np.float32) / 255.0
-        input_hr = np.reshape(input_hr_norm, (1, scaled_width, scaled_height, 1))
-    else:
-        input_hr_0 = img_ycc
-        input_hr_norm = input_hr_0.astype(np.float32) / 255.0
-        input_hr = np.reshape(input_hr_norm,(1, scaled_width, scaled_height, 1))
+        img_ycc = cv2.cvtColor(cropped, cv2.COLOR_BGR2YCrCb)
+        if config.CHANNELS == 1:
+            # only work on the luminance channel Y
+            img_y = img_ycc[:, :, 0]
 
-    input_lr_0 = cv2.resize(input_hr_norm, None, fx=1. / config.SCALE, fy=1. / config.SCALE, interpolation=cv2.INTER_CUBIC)
-    input_lr = np.reshape(input_lr_0, (1, input_lr_0.shape[0], input_lr_0.shape[1], 1))
+            input_hr_0 = img_y
+            input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+            input_hr = np.reshape(input_hr_norm, (1, scaled_width, scaled_height, 1))
+        else:
+            input_hr_0 = img_ycc
+            input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+            input_hr = np.reshape(input_hr_norm,(1, scaled_width, scaled_height, 1))
 
-    bicubic_hr_0 = cv2.resize(input_lr_0, None, fx=1.*config.SCALE, fy=1.*config.SCALE, interpolation=cv2.INTER_CUBIC)
-    bicubic_hr = np.reshape(bicubic_hr_0, (1, scaled_width, scaled_height, 1))
+        input_lr_0 = cv2.resize(input_hr_norm, None, fx=1. / config.SCALE, fy=1. / config.SCALE, interpolation=cv2.INTER_CUBIC)
+        input_lr = np.reshape(input_lr_0, (1, input_lr_0.shape[0], input_lr_0.shape[1], 1))
 
-    pred_config = PredictConfig(model=Model(d=config.FSRCNN_D,
-                                            s=config.FSRCNN_S,
-                                            m=config.FSRCNN_M,
-                                            qw=config.QW,
-                                            qa=config.QA,
-                                            height=scaled_height,
-                                            width=scaled_width
-                                            ),
-                                session_init=SmartInit(model_path),
-                                input_names=['input_lr', 'input_hr', 'bicubic_hr'],
-                                output_names=['NHWC_output', 'psnr', 'input_lr', 'psnr_bicubic_baseline'])
+        bicubic_hr_0 = cv2.resize(input_lr_0, None, fx=1.*config.SCALE, fy=1.*config.SCALE, interpolation=cv2.INTER_CUBIC)
+        bicubic_hr = np.reshape(bicubic_hr_0, (1, scaled_width, scaled_height, 1))
 
-    predictor = OfflinePredictor(pred_config)
+        pred_config = PredictConfig(model=Model(d=config.FSRCNN_D,
+                                                s=config.FSRCNN_S,
+                                                m=config.FSRCNN_M,
+                                                qw=config.QW,
+                                                qa=config.QA,
+                                                height=scaled_height,
+                                                width=scaled_width
+                                                ),
+                                    session_init=SmartInit(model_path),
+                                    input_names=['input_lr', 'input_hr', 'bicubic_hr'],
+                                    output_names=['NHWC_output', 'psnr', 'input_lr', 'psnr_bicubic_baseline'])
 
-    NHWC_output, psnr, input_lr_out, psnr_base = predictor(input_lr, input_hr, bicubic_hr)
+        predictor = OfflinePredictor(pred_config)
 
-    NHWC_output = (NHWC_output * 255.0).clip(min=0, max=255)
-    NHWC_output = (NHWC_output).astype(np.uint8)
-    NHWC_output = np.reshape(NHWC_output, (scaled_width, scaled_height, 1))
+        NHWC_output, psnr, input_lr_out, psnr_base = predictor(input_lr, input_hr, bicubic_hr)
 
-    print("PSNR of fsrcnn  upscaled image: {}".format(psnr))
-    print("PSNR of bicubic upscaled image: {}".format(psnr_base))
+        NHWC_output = (NHWC_output * 255.0).clip(min=0, max=255)
+        NHWC_output = (NHWC_output).astype(np.uint8)
+        NHWC_output = np.reshape(NHWC_output, (scaled_width, scaled_height, 1))
 
-    img_y_ex = np.expand_dims(img_y, axis=3)
-    bicubic_hr_out = bicubic_hr_0.astype(np.float32) * 255.0
+        print("PSNR of fsrcnn  upscaled image: {}".format(psnr))
+        print("PSNR of bicubic upscaled image: {}".format(psnr_base))
 
-    if config.ORIGINAL_FSRCNN is True:
-        cv2.imwrite(output_path+'orgn'+'_psnr('+ str(psnr)+")_fsrcnnOutput.png",NHWC_output)
-        cv2.imwrite(output_path+'orgn'+'_psnrbase(' + str(psnr_base) + ")_bicubicOutput.png", bicubic_hr_out)
-        cv2.imwrite(output_path+'orgn'+'_input.png', img_y_ex)
-    else:
-        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnr('+str(psnr)+")_fsrcnnOutput.png", NHWC_output)
-        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnrbase('+str(psnr_base)+")_bicubicOutput.png", bicubic_hr_out)
-        cv2.imwrite(output_path+'qa'+str(config.QA)+'_qw'+str(config.QW)+'_input.png', img_y_ex)
+        img_y_ex = np.expand_dims(img_y, axis=3)
+        bicubic_hr_out = bicubic_hr_0.astype(np.float32) * 255.0
+
+        if config.ORIGINAL_FSRCNN is True:
+            cv2.imwrite(output_path+str(img_num)+'_orgn'+'_psnr('+ str(psnr)+")_fsrcnnOutput.png",NHWC_output)
+            cv2.imwrite(output_path+str(img_num)+'_orgn'+'_psnrbase(' + str(psnr_base) + ")_bicubicOutput.png", bicubic_hr_out)
+            cv2.imwrite(output_path+str(img_num)+'_orgn'+'_input.png', img_y_ex)
+        else:
+            cv2.imwrite(output_path+str(img_num)+'_qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnr('+str(psnr)+")_fsrcnnOutput.png", NHWC_output)
+            cv2.imwrite(output_path+str(img_num)+'_qa'+str(config.QA)+'_qw'+str(config.QW)+'_psnrbase('+str(psnr_base)+")_bicubicOutput.png", bicubic_hr_out)
+            cv2.imwrite(output_path+str(img_num)+'_qa'+str(config.QA)+'_qw'+str(config.QW)+'_input.png', img_y_ex)
+        psnr_list.append(psnr)
+        psnr_base_list.append(psnr_base)
+        img_num = img_num+1
+
+    psnr_avg = sum(psnr_list) / len(psnr_list)
+    psnr_base_avg = sum(psnr_base_list) / len(psnr_base_list)
+    print("Average PSNR of fsrcnn  upscaled image: {}".format(psnr_avg))
+    print("Average PSNR of bicubic upscaled image: {}".format(psnr_base_avg))
 
 
 if __name__ == '__main__':
@@ -308,3 +328,4 @@ if __name__ == '__main__':
         )
         num_gpu = max(get_num_gpu(), 1)
         launch_train_with_config(train_config, SyncMultiGPUTrainerParameterServer(num_gpu))
+

@@ -77,14 +77,35 @@ class ImageDecodeYCrCb(MapDataComponent):
             size_hr = size_lr * config.SCALE
 
             img = cv2.imdecode(im_data, cv2.IMREAD_COLOR)
-            img_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+            # img_ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
 
+            # trimming pixels to match image size to scale
+            width = img.shape[0]
+            scaled_width = width - (width % config.SCALE)
+            height = img.shape[1]
+            scaled_height = height - (height % config.SCALE)
+            cropped = img[0:scaled_width, 0:scaled_height, :]
+
+            img_ycc = cv2.cvtColor(cropped, cv2.COLOR_BGR2YCrCb)
             if config.CHANNELS == 1:
-                lr_y = img_ycc[:, :, 0]
-                lr_y_ex = np.expand_dims(lr_y, axis=3)
-                return lr_y_ex
+                # only work on the luminance channel Y
+                img_y = img_ycc[:, :, 0]
+
+                input_hr_0 = img_y
+                input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+                input_hr = np.reshape(input_hr_norm, (scaled_width, scaled_height, 1))
             else:
-                return img_ycc
+                input_hr_0 = img_ycc
+                input_hr_norm = input_hr_0.astype(np.float32) / 255.0
+                input_hr = np.reshape(input_hr_norm, (scaled_width, scaled_height, 1))
+            return input_hr
+
+            # if config.CHANNELS == 1:
+            #     lr_y = img_ycc[:, :, 0]
+            #     lr_y_ex = np.expand_dims(lr_y, axis=3)
+            #     return lr_y_ex
+            # else:
+            #     return img_ycc
 
         super(ImageDecodeYCrCb, self).__init__(ds, func, index=index)
 
@@ -92,7 +113,7 @@ class ImageDecodeYCrCb(MapDataComponent):
 class RejectTooSmallImages(MapDataComponent):
     def __init__(self, ds, thresh=100, index=0):
         def func(img):
-            h, w = img.shape
+            h, w, c = img.shape
             if (h < thresh) or (w < thresh):
                 return None
             else:
@@ -114,7 +135,7 @@ class CenterSquareResize(MapDataComponent):
                     if off > 0:
                         img = img[:, off:-off, :]
 
-                img = cv2.resize(img, (100, 100))
+                img = cv2.resize(img, None, (100, 100), interpolation=cv2.INTER_CUBIC)
                 return img
             except Exception:
                 return None
@@ -173,3 +194,5 @@ if __name__ == '__main__':
         for i in ds:
             cv2.imshow('example', i[0])
             cv2.waitKey(0)
+
+
